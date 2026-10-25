@@ -1,0 +1,25 @@
+# ESP-IDF build outputs
+build/
+build_noai/
+build_host/
+sdkconfig
+sdkconfig.old
+sdkconfig.*.old
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+.env
+.env.*
+
+# Logs and temporary files
+*.log
+*.tmp
+
+# OS/editor
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/

@@ -1,0 +1,530 @@
+{
+  "created_utc": "2026-10-25T16:20:22.545058+00:00",
+  "dataset": {
+    "groups": 142,
+    "path": "data\\dataset.csv",
+    "rows": 795,
+    "sha256": "3c09fbe409b9a64772954439f0dbf10c81cc519a16b4af32c44b2a59675c48c6"
+  },
+  "features": {
+    "buckets": 2048,
+    "char_ngram_max": 5,
+    "char_ngram_min": 3,
+    "max_text_bytes": 160,
+    "max_tokens": 24
+  },
+  "hyperparameters": {
+    "epochs": 700,
+    "l2": 0.0002,
+    "label_smoothing": 0.02,
+    "learning_rate": 0.03,
+    "seed": 42,
+    "test_fraction": 0.2,
+    "val_fraction": 0.1
+  },
+  "model_type": "hashed_bow_char_ngram_linear_softmax",
+  "split": {
+    "test_groups": [
+      "config_04",
+      "config_06",
+      "help_05",
+      "help_09",
+      "help_11",
+      "list_01",
+      "list_04",
+      "off_04",
+      "off_08",
+      "off_10",
+      "off_bulk_05",
+      "off_multi_02",
+      "on_06",
+      "on_14",
+      "on_16",
+      "on_19",
+      "on_multi_03",
+      "status_01",
+      "status_07",
+      "status_14",
+      "status_15",
+      "status_all_03",
+      "toggle_01",
+      "toggle_10",
+      "unknown_ambig_04",
+      "unknown_hyp_03",
+      "unknown_neg_01",
+      "unknown_unrelated_03",
+      "unknown_unrelated_05"
+    ],
+    "test_rows": 159,
+    "train_rows": 568,
+    "val_groups": [
+      "config_07",
+      "config_11",
+      "help_08",
+      "list_09",
+      "off_03",
+      "off_17",
+      "on_11",
+      "on_18",
+      "status_09",
+      "status_16",
+      "toggle_04",
+      "unknown_hyp_02"
+    ],
+    "val_rows": 68
+  },
+  "test": {
+    "accuracy": 0.8301886792452831,
+    "confusion_matrix": [
+      [
+        31,
+        6,
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      [
+        0,
+        20,
+        0,
+        0,
+        0,
+        0,
+        9
+      ],
+      [
+        0,
+        0,
+        18,
+        0,
+        0,
+        0,
+        0
+      ],
+      [
+        0,
+        0,
+        1,
+        29,
+        1,
+        0,
+        0
+      ],
+      [
+        0,
+        0,
+        0,
+        0,
+        4,
+        1,
+        1
+      ],
+      [
+        0,
+        0,
+        0,
+        0,
+        0,
+        9,
+        0
+      ],
+      [
+        3,
+        2,
+        2,
+        1,
+        0,
+        0,
+        21
+      ]
+    ],
+    "macro_f1": 0.8319330808740085,
+    "macro_precision": 0.8324684712594715,
+    "macro_recall": 0.8362544969886461,
+    "per_class": [
+      {
+        "f1": 0.8732394366197184,
+        "intent": "TURN_ON",
+        "precision": 0.9117647058823529,
+        "recall": 0.8378378378378378,
+        "support": 37
+      },
+      {
+        "f1": 0.7017543859649122,
+        "intent": "TURN_OFF",
+        "precision": 0.7142857142857143,
+        "recall": 0.6896551724137931,
+        "support": 29
+      },
+      {
+        "f1": 0.923076923076923,
+        "intent": "TOGGLE",
+        "precision": 0.8571428571428571,
+        "recall": 1.0,
+        "support": 18
+      },
+      {
+        "f1": 0.9508196721311476,
+        "intent": "GET_STATUS",
+        "precision": 0.9666666666666667,
+        "recall": 0.9354838709677419,
+        "support": 31
+      },
+      {
+        "f1": 0.7272727272727272,
+        "intent": "LIST_DEVICES",
+        "precision": 0.8,
+        "recall": 0.6666666666666666,
+        "support": 6
+      },
+      {
+        "f1": 0.9473684210526316,
+        "intent": "HELP",
+        "precision": 0.9,
+        "recall": 1.0,
+        "support": 9
+      },
+      {
+        "f1": 0.7,
+        "intent": "UNKNOWN",
+        "precision": 0.6774193548387096,
+        "recall": 0.7241379310344828,
+        "support": 29
+      }
+    ],
+    "per_class_errors": [
+      {
+        "confidence": 0.4442964107164658,
+        "expected": "TURN_ON",
+        "group": "on_14",
+        "predicted": "TURN_OFF",
+        "runner_up": "TURN_ON",
+        "runner_up_confidence": 0.2904619351349945,
+        "text": "give power to the fan"
+      },
+      {
+        "confidence": 0.44958535477673794,
+        "expected": "TURN_ON",
+        "group": "on_14",
+        "predicted": "TURN_OFF",
+        "runner_up": "TURN_ON",
+        "runner_up_confidence": 0.2956264321909075,
+        "text": "give power to the gpio 18"
+      },
+      {
+        "confidence": 0.4442964107164658,
+        "expected": "TURN_ON",
+        "group": "on_14",
+        "predicted": "TURN_OFF",
+        "runner_up": "TURN_ON",
+        "runner_up_confidence": 0.2904619351349945,
+        "text": "give power to the led1"
+      },
+      {
+        "confidence": 0.39180629868613914,
+        "expected": "TURN_ON",
+        "group": "on_14",
+        "predicted": "TURN_OFF",
+        "runner_up": "UNKNOWN",
+        "runner_up_confidence": 0.2652035876278041,
+        "text": "send power to fan"
+      },
+      {
+        "confidence": 0.4818454479860807,
+        "expected": "TURN_ON",
+        "group": "on_14",
+        "predicted": "TURN_OFF",
+        "runner_up": "TURN_ON",
+        "runner_up_confidence": 0.19094143580164952,
+        "text": "send power to gpio 18"
+      },
+      {
+        "confidence": 0.39180629868613914,
+        "expected": "TURN_ON",
+        "group": "on_14",
+        "predicted": "TURN_OFF",
+        "runner_up": "UNKNOWN",
+        "runner_up_confidence": 0.2652035876278041,
+        "text": "send power to led1"
+      },
+      {
+        "confidence": 0.805121664687418,
+        "expected": "TURN_OFF",
+        "group": "off_08",
+        "predicted": "UNKNOWN",
+        "runner_up": "TURN_ON",
+        "runner_up_confidence": 0.05211637747682849,
+        "text": "kill the GPIO23"
+      },
+      {
+        "confidence": 0.6413564437247059,
+        "expected": "TURN_OFF",
+        "group": "off_08",
+        "predicted": "UNKNOWN",
+        "runner_up": "GET_STATUS",
+        "runner_up_confidence": 0.13342478627379964,
+        "text": "kill the led one"
+      },
+      {
+        "confidence": 0.6413564437247059,
+        "expected": "TURN_OFF",
+        "group": "off_08",
+        "predicted": "UNKNOWN",
+        "runner_up": "GET_STATUS",
+        "runner_up_confidence": 0.13342478627379964,
+        "text": "kill the led 2"
+      },
+      {
+        "confidence": 0.7245887166659212,
+        "expected": "TURN_OFF",
+        "group": "off_08",
+        "predicted": "UNKNOWN",
+        "runner_up": "TURN_ON",
+        "runner_up_confidence": 0.11058073417327555,
+        "text": "stop the GPIO23"
+      },
+      {
+        "confidence": 0.5252960974054212,
+        "expected": "TURN_OFF",
+        "group": "off_08",
+        "predicted": "UNKNOWN",
+        "runner_up": "TURN_ON",
+        "runner_up_confidence": 0.19300942046798736,
+        "text": "stop the led one"
+      },
+      {
+        "confidence": 0.5252960974054212,
+        "expected": "TURN_OFF",
+        "group": "off_08",
+        "predicted": "UNKNOWN",
+        "runner_up": "TURN_ON",
+        "runner_up_confidence": 0.19300942046798736,
+        "text": "stop the led 2"
+      }
+    ],
+    "rejection": {
+      "accepted": 117,
+      "accepted_correct": 107,
+      "accepted_incorrect": 10,
+      "confidence_threshold": 0.5,
+      "coverage": 0.7358490566037735,
+      "margin_threshold": 0.1,
+      "rejected": 42
+    }
+  },
+  "training": {
+    "best_epoch": 108,
+    "best_val_accuracy": 0.8676470588235294,
+    "best_val_loss": 0.5177672627912059,
+    "class_weights": [
+      0.6706021251475797,
+      0.7055900621118012,
+      1.2879818594104309,
+      0.6491428571428571,
+      3.8639455782312924,
+      2.704761904761905,
+      0.8725038402457758
+    ],
+    "history": [
+      {
+        "epoch": 1,
+        "train_loss": 1.934859119467569,
+        "val_accuracy": 0.6911764705882353
+      },
+      {
+        "epoch": 50,
+        "train_loss": 0.17727713813631463,
+        "val_accuracy": 0.8235294117647058
+      },
+      {
+        "epoch": 100,
+        "train_loss": 0.15851114364397664,
+        "val_accuracy": 0.8676470588235294
+      },
+      {
+        "epoch": 150,
+        "train_loss": 0.15575407668601465,
+        "val_accuracy": 0.8529411764705882
+      },
+      {
+        "epoch": 200,
+        "train_loss": 0.1545504802200372,
+        "val_accuracy": 0.8529411764705882
+      },
+      {
+        "epoch": 250,
+        "train_loss": 0.15398019253312845,
+        "val_accuracy": 0.8529411764705882
+      },
+      {
+        "epoch": 300,
+        "train_loss": 0.1537039769845965,
+        "val_accuracy": 0.8382352941176471
+      },
+      {
+        "epoch": 350,
+        "train_loss": 0.15356673762218065,
+        "val_accuracy": 0.8382352941176471
+      },
+      {
+        "epoch": 400,
+        "train_loss": 0.15349638223789352,
+        "val_accuracy": 0.8382352941176471
+      },
+      {
+        "epoch": 450,
+        "train_loss": 0.15345919666602104,
+        "val_accuracy": 0.8382352941176471
+      },
+      {
+        "epoch": 500,
+        "train_loss": 0.15343903159206598,
+        "val_accuracy": 0.8382352941176471
+      },
+      {
+        "epoch": 550,
+        "train_loss": 0.15342785076133875,
+        "val_accuracy": 0.8382352941176471
+      },
+      {
+        "epoch": 600,
+        "train_loss": 0.15342150731164472,
+        "val_accuracy": 0.8382352941176471
+      },
+      {
+        "epoch": 650,
+        "train_loss": 0.15341781078336908,
+        "val_accuracy": 0.8235294117647058
+      },
+      {
+        "epoch": 700,
+        "train_loss": 0.1534155909050001,
+        "val_accuracy": 0.8235294117647058
+      }
+    ]
+  },
+  "validation": {
+    "accuracy": 0.8676470588235294,
+    "confusion_matrix": [
+      [
+        9,
+        0,
+        3,
+        0,
+        0,
+        0,
+        0
+      ],
+      [
+        0,
+        18,
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      [
+        0,
+        0,
+        9,
+        0,
+        0,
+        0,
+        0
+      ],
+      [
+        0,
+        0,
+        1,
+        11,
+        0,
+        0,
+        0
+      ],
+      [
+        0,
+        0,
+        0,
+        2,
+        1,
+        0,
+        0
+      ],
+      [
+        0,
+        0,
+        0,
+        0,
+        0,
+        3,
+        0
+      ],
+      [
+        3,
+        0,
+        0,
+        0,
+        0,
+        0,
+        8
+      ]
+    ],
+    "macro_f1": 0.8271838687628161,
+    "macro_precision": 0.8983516483516484,
+    "macro_recall": 0.8181818181818182,
+    "per_class": [
+      {
+        "f1": 0.75,
+        "intent": "TURN_ON",
+        "precision": 0.75,
+        "recall": 0.75,
+        "support": 12
+      },
+      {
+        "f1": 1.0,
+        "intent": "TURN_OFF",
+        "precision": 1.0,
+        "recall": 1.0,
+        "support": 18
+      },
+      {
+        "f1": 0.8181818181818181,
+        "intent": "TOGGLE",
+        "precision": 0.6923076923076923,
+        "recall": 1.0,
+        "support": 9
+      },
+      {
+        "f1": 0.8799999999999999,
+        "intent": "GET_STATUS",
+        "precision": 0.8461538461538461,
+        "recall": 0.9166666666666666,
+        "support": 12
+      },
+      {
+        "f1": 0.5,
+        "intent": "LIST_DEVICES",
+        "precision": 1.0,
+        "recall": 0.3333333333333333,
+        "support": 3
+      },
+      {
+        "f1": 1.0,
+        "intent": "HELP",
+        "precision": 1.0,
+        "recall": 1.0,
+        "support": 3
+      },
+      {
+        "f1": 0.8421052631578948,
+        "intent": "UNKNOWN",
+        "precision": 1.0,
+        "recall": 0.7272727272727273,
+        "support": 11
+      }
+    ]
+  }
+}

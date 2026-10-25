@@ -1,0 +1,21 @@
+menu "TinyAI Controller"
+
+    config TINYAI_ENABLED
+        bool "Compile the TinyAI intent classifier"
+        default y
+        help
+            Builds the offline int8 linear intent model and lets natural-language
+            commands use it. When disabled, all deterministic console GPIO
+            commands, sensors, automation and the pin manager still work. AI is
+            an optional interface, never part of the GPIO safety path.
+
+    config TINYAI_AI_DEFAULT_ENABLED
+        bool "Enable AI natural-language control at boot"
+        depends on TINYAI_ENABLED
+        default y
+        help
+            Runtime switch. Even when enabled, AI commands still require a
+            configured device with ai_allowed=true and pass all policy checks.
+            Use the console command "ai off" to disable at runtime.
+
+endmenu
