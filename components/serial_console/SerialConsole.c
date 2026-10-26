@@ -21,12 +21,15 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "driver/uart.h"
+#include "driver/uart_vfs.h"
+static TaskHandle_t s_console_task_handle = NULL;
 #endif
 
 #define CONSOLE_LINE_MAX 256
 #define CONSOLE_MAX_ARGS 16
 #define CONSOLE_PENDING_TIMEOUT_MS 60000u
-#define CONSOLE_TASK_STACK 6144
+#define CONSOLE_TASK_STACK 8192
+#define CONSOLE_OUT_BUF_MAX 2048
 
 typedef enum {
     CONSOLE_PENDING_NONE = 0,
@@ -40,19 +43,32 @@ typedef struct {
     uint32_t created_ms;
 } console_pending_t;
 
+/*
+ * Static scratch buffers to prevent task stack bloat (saves > 10 KB of stack frame).
+ * NOTE: These buffers are strictly CONSOLE-TASK-ONLY. They are not protected by
+ * mutexes and must only be accessed sequentially from the single serial_console_task context.
+ */
 static console_pending_t s_pending;
+static char s_console_out_buffer[CONSOLE_OUT_BUF_MAX];
+static pm_pin_status_t s_pins_buf[PM_MAX_PINS];
+static pm_action_log_entry_t s_log_entries[PM_LOG_CAPACITY];
+static sensor_sample_t s_sensors_buf[SENSOR_MAX];
 
 static void outf(serial_console_output_fn out, void *context, const char *format, ...)
 {
-    char buffer[4096];
     va_list args;
     va_start(args, format);
-    vsnprintf(buffer, sizeof(buffer), format, args);
+    int written = vsnprintf(s_console_out_buffer, sizeof(s_console_out_buffer), format, args);
     va_end(args);
+    if (written < 0) {
+        s_console_out_buffer[0] = '\0';
+    } else if ((size_t)written >= sizeof(s_console_out_buffer)) {
+        s_console_out_buffer[sizeof(s_console_out_buffer) - 1] = '\0';
+    }
     if (out != NULL) {
-        out(context, buffer);
+        out(context, s_console_out_buffer);
     } else {
-        fputs(buffer, stdout);
+        fputs(s_console_out_buffer, stdout);
         fflush(stdout);
     }
 }
@@ -405,20 +421,19 @@ static void command_pins(serial_console_output_fn out, void *context, size_t arg
 
 static void command_devices(serial_console_output_fn out, void *context)
 {
-    pm_pin_status_t pins[PM_MAX_PINS];
-    size_t count = pin_manager_list(pins, PM_MAX_PINS, true);
+    size_t count = pin_manager_list(s_pins_buf, PM_MAX_PINS, true);
     size_t shown = 0;
     for (size_t i = 0; i < count; ++i) {
-        if (!pins[i].configured) {
+        if (!s_pins_buf[i].configured) {
             continue;
         }
         ++shown;
-        outf(out, context, "  %-16s GPIO%-2u %-6s %s%s%s\n", pins[i].device_name,
-             (unsigned)pins[i].pin,
-             pins[i].mode == GPIO_MODE_OUTPUT ? "output" : "input",
-             pins[i].logical_state ? "ON" : "OFF",
-             pins[i].ai_allowed ? " ai" : " local",
-             pins[i].test_approved ? " test" : "");
+        outf(out, context, "  %-16s GPIO%-2u %-6s %s%s%s\n", s_pins_buf[i].device_name,
+             (unsigned)s_pins_buf[i].pin,
+             s_pins_buf[i].mode == GPIO_MODE_OUTPUT ? "output" : "input",
+             s_pins_buf[i].logical_state ? "ON" : "OFF",
+             s_pins_buf[i].ai_allowed ? " ai" : " local",
+             s_pins_buf[i].test_approved ? " test" : "");
     }
     if (shown == 0) {
         outf(out, context,
@@ -430,25 +445,24 @@ static void command_devices(serial_console_output_fn out, void *context)
 static void command_status(serial_console_output_fn out, void *context, size_t argc,
                            char **argv)
 {
-    pm_pin_status_t pins[PM_MAX_PINS];
     if (argc >= 2) {
         uint8_t pin = 0;
         if (!resolve_target_pin(argv[1], &pin)) {
             outf(out, context, "Unknown target '%s'.\n", argv[1]);
             return;
         }
-        if (pin_manager_get_status(pin, &pins[0]) != PM_OK) {
+        if (pin_manager_get_status(pin, &s_pins_buf[0]) != PM_OK) {
             outf(out, context, "Invalid GPIO%u.\n", (unsigned)pin);
             return;
         }
-        print_pin_detail(&pins[0], out, context);
+        print_pin_detail(&s_pins_buf[0], out, context);
         return;
     }
-    size_t count = pin_manager_list(pins, PM_MAX_PINS, true);
+    size_t count = pin_manager_list(s_pins_buf, PM_MAX_PINS, true);
     size_t shown = 0;
     for (size_t i = 0; i < count; ++i) {
-        if (pins[i].configured) {
-            print_pin_detail(&pins[i], out, context);
+        if (s_pins_buf[i].configured) {
+            print_pin_detail(&s_pins_buf[i], out, context);
             ++shown;
         }
     }
@@ -457,12 +471,144 @@ static void command_status(serial_console_output_fn out, void *context, size_t a
     }
 }
 
+static void console_blink_notify(void *context, const char *msg)
+{
+    (void)context;
+    fputs(msg, stdout);
+    fflush(stdout);
+}
+
+static void command_blink(serial_console_output_fn out, void *context, size_t argc,
+                          char **argv)
+{
+    if (argc >= 2 && strcmp(argv[1], "cancel") == 0) {
+        (void)pin_manager_blink_cancel(out, context);
+        return;
+    }
+    if (argc < 3) {
+        outf(out, context,
+             "Usage: gpio blink <gpio> <duration_ms> | gpio blink cancel\n");
+        return;
+    }
+
+    uint32_t pin_value = 0;
+    if (!parse_u32(argv[1], 0, PM_MAX_PINS - 1, &pin_value)) {
+        outf(out, context,
+             "Target: invalid | Duration: %s | Validation: rejected (GPIO must be 0..39)\n",
+             argv[2]);
+        return;
+    }
+    uint8_t pin = (uint8_t)pin_value;
+
+    uint32_t duration_ms = 0;
+    if (!parse_u32(argv[2], 1, 60000, &duration_ms)) {
+        outf(out, context,
+             "Target: GPIO%u | Duration: %s | Validation: rejected (duration must be 1..60000 ms)\n",
+             (unsigned)pin, argv[2]);
+        return;
+    }
+
+    if (pin == 2 && !board_profile_is_gpio2_authorized()) {
+        outf(out, context,
+             "Target: GPIO2 | Duration: %lu ms | Validation: denied (strapping pin GPIO2 requires session authorization: run 'gpio authorize 2')\n",
+             (unsigned long)duration_ms);
+        return;
+    }
+
+    outf(out, context,
+         "Target: GPIO%u | Duration: %lu ms | Validation: approved\nExecution: started\n",
+         (unsigned)pin, (unsigned long)duration_ms);
+
+    pm_blink_notify_fn notify = out != NULL ? (pm_blink_notify_fn)out : console_blink_notify;
+    void *notify_ctx = out != NULL ? context : NULL;
+    pm_status_t status = pin_manager_blink_start(pin, duration_ms, notify, notify_ctx);
+    if (status != PM_OK) {
+        outf(out, context, "Execution: failed (%s)\n", pin_manager_status_name(status));
+    }
+}
+
+static void command_authorize(serial_console_output_fn out, void *context, size_t argc,
+                             char **argv)
+{
+    if (argc < 2) {
+        outf(out, context, "Usage: gpio authorize <gpio>\n");
+        return;
+    }
+    uint32_t pin = 0;
+    if (!parse_u32(argv[1], 0, PM_MAX_PINS - 1, &pin)) {
+        outf(out, context, "GPIO must be 0..39.\n");
+        return;
+    }
+    if (pin == 2) {
+        board_profile_set_gpio2_authorized(true);
+        outf(out, context,
+             "GPIO2 session authorization granted (session-only; will not persist across reboot).\n");
+        return;
+    }
+    if (pin == 0 || pin == 5 || pin == 12 || pin == 15) {
+        outf(out, context,
+             "Cannot authorize GPIO%u: protected strapping pin. Only GPIO2 is supported for session authorization.\n",
+             (unsigned)pin);
+        return;
+    }
+    if (pin >= 6 && pin <= 11) {
+        outf(out, context, "Cannot authorize GPIO%u: flash pins are hard-blocked.\n",
+             (unsigned)pin);
+        return;
+    }
+    if (pin == 1 || pin == 3) {
+        outf(out, context, "Cannot authorize GPIO%u: UART0 console pins are hard-blocked.\n",
+             (unsigned)pin);
+        return;
+    }
+    outf(out, context, "GPIO%u does not require strapping authorization.\n", (unsigned)pin);
+}
+
+static void command_revoke(serial_console_output_fn out, void *context, size_t argc,
+                           char **argv)
+{
+    if (argc < 2) {
+        outf(out, context, "Usage: gpio revoke <gpio>\n");
+        return;
+    }
+    uint32_t pin = 0;
+    if (!parse_u32(argv[1], 0, PM_MAX_PINS - 1, &pin)) {
+        outf(out, context, "GPIO must be 0..39.\n");
+        return;
+    }
+    if (pin == 2) {
+        board_profile_set_gpio2_authorized(false);
+        uint8_t active_pin = 0;
+        if (pin_manager_blink_is_active(&active_pin) && active_pin == 2) {
+            (void)pin_manager_blink_cancel(out, context);
+        }
+        outf(out, context, "GPIO2 session authorization revoked.\n");
+        return;
+    }
+    outf(out, context, "GPIO%u is not session-authorized.\n", (unsigned)pin);
+}
+
 static void command_assign(serial_console_output_fn out, void *context, size_t argc,
                            char **argv);
+
+static void command_gpio(serial_console_output_fn out, void *context, size_t argc,
+                         char **argv);
 
 static void command_pin(serial_console_output_fn out, void *context, size_t argc,
                         char **argv)
 {
+    if (argc >= 2 && strcmp(argv[1], "blink") == 0) {
+        command_blink(out, context, argc - 1, argv + 1);
+        return;
+    }
+    if (argc >= 2 && strcmp(argv[1], "authorize") == 0) {
+        command_authorize(out, context, argc - 1, argv + 1);
+        return;
+    }
+    if (argc >= 2 && strcmp(argv[1], "revoke") == 0) {
+        command_revoke(out, context, argc - 1, argv + 1);
+        return;
+    }
     if (argc >= 2 && strcmp(argv[1], "list") == 0) {
         command_devices(out, context);
         return;
@@ -474,6 +620,22 @@ static void command_pin(serial_console_output_fn out, void *context, size_t argc
     }
     if (argc >= 3 && strcmp(argv[1], "assign") == 0) {
         command_assign(out, context, argc - 1, argv + 1);
+        return;
+    }
+    if (argc >= 4 && strcmp(argv[1], "write") == 0) {
+        uint32_t pin_value = 0;
+        if (!parse_u32(argv[2], 0, PM_MAX_PINS - 1, &pin_value)) {
+            outf(out, context, "GPIO must be 0..39.\n");
+            return;
+        }
+        uint8_t pin = (uint8_t)pin_value;
+        const char *val_str = argv[3];
+        bool on = (strcmp(val_str, "1") == 0 || strcmp(val_str, "high") == 0 || strcmp(val_str, "on") == 0);
+        pm_status_t status =
+            pin_manager_output(pin, on, PM_ORIGIN_LOCAL,
+                               on ? "PIN_ON" : "PIN_OFF", 1.0f, "console");
+        outf(out, context, "GPIO%u %s: %s.\n", (unsigned)pin,
+             on ? "ON" : "OFF", pin_manager_status_name(status));
         return;
     }
 
@@ -525,8 +687,11 @@ static void command_pin(serial_console_output_fn out, void *context, size_t argc
              physical ? "HIGH" : "LOW", logical ? "ON" : "OFF");
         return;
     }
-    if (strcmp(action, "on") == 0 || strcmp(action, "off") == 0) {
-        bool on = strcmp(action, "on") == 0;
+    if (strcmp(action, "on") == 0 || strcmp(action, "off") == 0 ||
+        strcmp(action, "1") == 0 || strcmp(action, "0") == 0 ||
+        strcmp(action, "high") == 0 || strcmp(action, "low") == 0) {
+        bool on = (strcmp(action, "on") == 0 || strcmp(action, "1") == 0 ||
+                   strcmp(action, "high") == 0);
         pm_status_t status =
             pin_manager_output(pin, on, PM_ORIGIN_LOCAL,
                                on ? "PIN_ON" : "PIN_OFF", 1.0f, "console");
@@ -584,6 +749,31 @@ static void command_pin(serial_console_output_fn out, void *context, size_t argc
     pm_status_t status = pin_manager_pin_init(pin, mode, pull);
     outf(out, context, "GPIO%u init %s: %s.\n", (unsigned)pin,
          GPIO_ModeName(mode), pin_manager_status_name(status));
+}
+
+static void command_gpio(serial_console_output_fn out, void *context, size_t argc,
+                         char **argv)
+{
+    if (argc < 2) {
+        outf(out, context,
+             "Usage: gpio blink <gpio> <duration_ms> | gpio blink cancel\n"
+             "       gpio authorize <gpio> | gpio revoke <gpio>\n"
+             "       gpio <gpio> on|off|toggle|read\n");
+        return;
+    }
+    if (strcmp(argv[1], "blink") == 0) {
+        command_blink(out, context, argc - 1, argv + 1);
+        return;
+    }
+    if (strcmp(argv[1], "authorize") == 0) {
+        command_authorize(out, context, argc - 1, argv + 1);
+        return;
+    }
+    if (strcmp(argv[1], "revoke") == 0) {
+        command_revoke(out, context, argc - 1, argv + 1);
+        return;
+    }
+    command_pin(out, context, argc, argv);
 }
 
 static void command_assign(serial_console_output_fn out, void *context, size_t argc,
@@ -1167,15 +1357,14 @@ static void command_log(serial_console_output_fn out, void *context, size_t argc
              (unsigned)PM_LOG_CAPACITY);
         return;
     }
-    pm_action_log_entry_t entries[PM_LOG_CAPACITY];
-    size_t count = pin_manager_get_log(entries, PM_LOG_CAPACITY);
+    size_t count = pin_manager_get_log(s_log_entries, PM_LOG_CAPACITY);
     if (count == 0) {
         outf(out, context, "Audit log is empty.\n");
         return;
     }
     size_t start = count > wanted ? count - wanted : 0;
     for (size_t i = start; i < count; ++i) {
-        pm_action_log_entry_t *e = &entries[i];
+        pm_action_log_entry_t *e = &s_log_entries[i];
         outf(out, context,
              "  #%lu %8lums %-10s %-20s %-16s %-16s -> %s (%.2f)\n",
              (unsigned long)e->seq, (unsigned long)e->timestamp_ms,
@@ -1360,6 +1549,10 @@ int serial_console_execute_line(const char *line, serial_console_output_fn out,
         command_status(out, context, argc, argv);
         return 0;
     }
+    if (strcmp(argv[0], "gpio") == 0) {
+        command_gpio(out, context, argc, argv);
+        return 0;
+    }
     if (strcmp(argv[0], "pin") == 0) {
         command_pin(out, context, argc, argv);
         return 0;
@@ -1501,15 +1694,14 @@ int serial_console_execute_line(const char *line, serial_console_output_fn out,
         return 0;
     }
     if (strcmp(argv[0], "sensors") == 0) {
-        sensor_sample_t sensors[SENSOR_MAX];
-        size_t count = sensor_manager_list(sensors, SENSOR_MAX);
+        size_t count = sensor_manager_list(s_sensors_buf, SENSOR_MAX);
         if (count == 0) {
             outf(out, context,
                  "No sensors. Example: pin 34 input; sensor add light adc1 34\n");
             return 0;
         }
         for (size_t i = 0; i < count; ++i) {
-            print_sensor_line(&sensors[i], out, context);
+            print_sensor_line(&s_sensors_buf[i], out, context);
         }
         return 0;
     }
@@ -1579,6 +1771,10 @@ int serial_console_execute_line(const char *line, serial_console_output_fn out,
         return 0;
     }
     if (strcmp(argv[0], "cancel") == 0) {
+        uint8_t active_pin = 0;
+        if (pin_manager_blink_is_active(&active_pin)) {
+            (void)pin_manager_blink_cancel(out, context);
+        }
         command_engine_cancel();
         console_pending_clear();
         outf(out, context, "Pending confirmation cancelled.\n");
@@ -1605,6 +1801,13 @@ int serial_console_execute_line(const char *line, serial_console_output_fn out,
              (unsigned)info.free_heap_bytes,
              (unsigned)info.minimum_free_heap_bytes,
              (unsigned)info.largest_free_block_bytes);
+#ifdef ESP_PLATFORM
+        if (s_console_task_handle != NULL) {
+            UBaseType_t hwm = uxTaskGetStackHighWaterMark(s_console_task_handle);
+            outf(out, context, "Console task stack min free: %u bytes\n",
+                 (unsigned)(hwm * sizeof(StackType_t)));
+        }
+#endif
         return 0;
     }
     if (strcmp(argv[0], "reboot") == 0) {
@@ -1638,11 +1841,13 @@ static void console_task(void *argument)
     char line[CONSOLE_LINE_MAX];
     size_t length = 0;
     bool last_was_cr = false;
+    bool line_overflow = false;
     for (;;) {
         fputs("tinyai> ", stdout);
         fflush(stdout);
         length = 0;
         last_was_cr = false;
+        line_overflow = false;
         for (;;) {
             uint8_t ch = 0;
             int read = uart_read_bytes(UART_NUM_0, &ch, 1, pdMS_TO_TICKS(200));
@@ -1667,41 +1872,62 @@ static void console_task(void *argument)
                 continue;
             }
             if (ch >= 32 && ch < 127) {
-                if (length + 1 < sizeof(line)) {
+                if (!line_overflow && length + 1 < sizeof(line)) {
                     line[length++] = (char)ch;
                     fputc((int)ch, stdout);
                     fflush(stdout);
                 } else {
+                    line_overflow = true;
                     fputc('\a', stdout);
                     fflush(stdout);
                 }
             }
         }
         line[length] = '\0';
-        serial_console_execute_line(line, console_output, NULL);
+        if (line_overflow) {
+            outf(console_output, NULL,
+                 "Command line exceeded buffer limit (%u bytes). Discarded without execution.\n",
+                 (unsigned)(sizeof(line) - 1));
+        } else {
+            serial_console_execute_line(line, console_output, NULL);
+        }
     }
 }
 
 int serial_console_start(void)
 {
-    uart_config_t config = {
-        .baud_rate = 115200,
-        .data_bits = UART_DATA_8_BITS,
-        .parity = UART_PARITY_DISABLE,
-        .stop_bits = UART_STOP_BITS_1,
-        .flow_ctrl = UART_HW_FLOWCTRL_DISABLE,
-        .source_clk = UART_SCLK_DEFAULT,
-    };
-    esp_err_t err = uart_param_config(UART_NUM_0, &config);
-    if (err == ESP_OK) {
-        err = uart_driver_install(UART_NUM_0, 1024, 0, 0, NULL, 0);
+    if (!uart_is_driver_installed(UART_NUM_0)) {
+        uart_config_t config = {
+            .baud_rate = 115200,
+            .data_bits = UART_DATA_8_BITS,
+            .parity = UART_PARITY_DISABLE,
+            .stop_bits = UART_STOP_BITS_1,
+            .flow_ctrl = UART_HW_FLOWCTRL_DISABLE,
+            .source_clk = UART_SCLK_DEFAULT,
+        };
+        esp_err_t err = uart_param_config(UART_NUM_0, &config);
+        if (err == ESP_OK) {
+            err = uart_driver_install(UART_NUM_0, 1024, 0, 0, NULL, 0);
+        }
+        if (err != ESP_OK) {
+            return -1;
+        }
     }
-    if (err != ESP_OK) {
-        return -1;
-    }
+    uart_vfs_dev_port_set_rx_line_endings(UART_NUM_0, ESP_LINE_ENDINGS_CR);
+    uart_vfs_dev_port_set_tx_line_endings(UART_NUM_0, ESP_LINE_ENDINGS_CRLF);
+
     BaseType_t created = xTaskCreate(console_task, "tinyai_cli", CONSOLE_TASK_STACK,
-                                     NULL, 2, NULL);
+                                     NULL, 2, &s_console_task_handle);
     return created == pdPASS ? 0 : -1;
+}
+
+uint32_t serial_console_get_stack_high_water_mark(void)
+{
+    if (s_console_task_handle != NULL) {
+        UBaseType_t hwm = uxTaskGetStackHighWaterMark(s_console_task_handle);
+        return (uint32_t)(hwm * sizeof(StackType_t));
+    }
+    return 0;
 }
 
 #else
@@ -1709,6 +1935,11 @@ int serial_console_start(void)
 int serial_console_start(void)
 {
     return -1;
+}
+
+uint32_t serial_console_get_stack_high_water_mark(void)
+{
+    return 0;
 }
 
 #endif

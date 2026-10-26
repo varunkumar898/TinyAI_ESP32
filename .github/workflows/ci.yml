@@ -35,6 +35,36 @@ jobs:
         run: |
           ./build_host/host_benchmark
 
+  host-tests-sanitizers:
+    name: Linux CI Host Tests (ASan + UBSan)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install build prerequisites
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y cmake ninja-build clang
+
+      - name: Configure host tests with AddressSanitizer and UndefinedBehaviorSanitizer
+        run: |
+          cmake -S tests/host -B build_asan -G Ninja \
+            -DCMAKE_C_COMPILER=clang \
+            -DENABLE_SANITIZERS=ON \
+            -DCMAKE_BUILD_TYPE=Debug
+
+      - name: Build host tests with ASan & UBSan
+        run: |
+          cmake --build build_asan
+
+      - name: Run host tests with ASan & UBSan (including 10,000 fuzz iterations)
+        env:
+          ASAN_OPTIONS: "detect_leaks=1:check_initialization_order=1:strict_init_order=1"
+          UBSAN_OPTIONS: "print_stacktrace=1:halt_on_error=1"
+        run: |
+          ./build_asan/host_tests
+
   tinyml-pipeline:
     name: TinyML Evaluation & Reproducibility
     runs-on: ubuntu-latest

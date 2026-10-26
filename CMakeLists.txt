@@ -1,6 +1,23 @@
 cmake_minimum_required(VERSION 3.16)
 
 # ESP32 TinyAI Controller
+# Support -DTINYAI_ENABLED=ON/OFF CMake option
+if(DEFINED TINYAI_ENABLED)
+    if(TINYAI_ENABLED)
+        set(SDKCONFIG_DEFAULTS "sdkconfig.defaults" CACHE STRING "" FORCE)
+    else()
+        set(SDKCONFIG_DEFAULTS "sdkconfig.defaults;sdkconfig.noai" CACHE STRING "" FORCE)
+    endif()
+    if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/sdkconfig")
+        file(READ "${CMAKE_CURRENT_SOURCE_DIR}/sdkconfig" _SDKCFG_CONTENT)
+        if(NOT TINYAI_ENABLED AND _SDKCFG_CONTENT MATCHES "CONFIG_TINYAI_ENABLED=y")
+            file(REMOVE "${CMAKE_CURRENT_SOURCE_DIR}/sdkconfig")
+        elseif(TINYAI_ENABLED AND (_SDKCFG_CONTENT MATCHES "CONFIG_TINYAI_ENABLED=n" OR _SDKCFG_CONTENT MATCHES "# CONFIG_TINYAI_ENABLED is not set"))
+            file(REMOVE "${CMAKE_CURRENT_SOURCE_DIR}/sdkconfig")
+        endif()
+    endif()
+endif()
+
 # ESP-IDF entry point. Application components live under components/.
 include($ENV{IDF_PATH}/tools/cmake/project.cmake)
 project(esp32_tinyai_controller C)

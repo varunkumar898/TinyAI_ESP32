@@ -176,8 +176,20 @@ void pin_manager_clear_log(void);
 const char *pin_manager_status_name(pm_status_t status);
 const char *pin_origin_name(pm_origin_t origin);
 
+/* Non-blocking timed pulse/blink */
+typedef void (*pm_blink_notify_fn)(void *context, const char *msg);
+
+pm_status_t pin_manager_blink_start(uint8_t pin, uint32_t duration_ms,
+                                    pm_blink_notify_fn notify, void *context);
+pm_status_t pin_manager_blink_cancel(pm_blink_notify_fn notify, void *context);
+bool pin_manager_blink_is_active(uint8_t *active_pin);
+void pin_manager_blink_update(uint32_t now_ms);
+
 #ifdef PIN_MANAGER_HOST_TEST
 void pin_manager_test_set_time(uint32_t now_ms);
+void pin_manager_test_get_lock_state(uint32_t *lock_count, uint32_t *unlock_count, bool *is_locked);
+void pin_manager_test_reset_lock_state(void);
+void pin_manager_test_set_lock_fail(bool fail);
 #endif
 
 #ifdef __cplusplus

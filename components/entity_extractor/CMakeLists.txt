@@ -1,4 +1,4 @@
 idf_component_register(
-    SRCS "entity_extractor.c"
+    SRCS "entity_extractor.c" "slot_extractor.c"
     INCLUDE_DIRS "include"
 )

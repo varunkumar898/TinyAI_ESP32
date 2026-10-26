@@ -528,10 +528,6 @@ static size_t update_pir_locked(uint32_t now_ms)
             if (status == PM_OK) {
                 s_pir.output_owned = true;
                 ++changed;
-            } else {
-                AUTO_LOGW("PIR output GPIO%u failed: %s",
-                          (unsigned)s_pir.output_pin,
-                          pin_manager_status_name(status));
             }
         }
     } else if (s_pir.seen_motion &&
@@ -542,10 +538,6 @@ static size_t update_pir_locked(uint32_t now_ms)
                                    "pir-off", 1.0f, "automation");
             if (status == PM_OK) {
                 ++changed;
-            } else {
-                AUTO_LOGW("PIR release GPIO%u failed: %s",
-                          (unsigned)s_pir.output_pin,
-                          pin_manager_status_name(status));
             }
         }
         s_pir.output_owned = false;
@@ -574,8 +566,6 @@ static size_t update_button_locked(uint32_t now_ms)
         pin_manager_toggle(s_button.output_pin, PM_ORIGIN_AUTOMATION, "button",
                            1.0f, "automation");
     if (status != PM_OK) {
-        AUTO_LOGW("button output GPIO%u failed: %s",
-                  (unsigned)s_button.output_pin, pin_manager_status_name(status));
         return 0;
     }
     return 1;

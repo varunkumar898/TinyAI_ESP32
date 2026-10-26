@@ -1,6 +1,7 @@
 #include "test_framework.h"
 
 void test_entity(void);
+void test_slot_extractor(void);
 void test_tinyml(void);
 void test_gpio_driver(void);
 void test_pin_manager(void);
@@ -19,6 +20,7 @@ int main(void)
     printf("----------------------------------\n");
 
     test_entity();
+    test_slot_extractor();
     test_tinyml();
     test_gpio_driver();
     test_pin_manager();

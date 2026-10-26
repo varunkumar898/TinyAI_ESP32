@@ -16,6 +16,7 @@ set(COMPONENT_SOURCES
     ${ROOT}/components/tinyml/tinyml.c
     ${ROOT}/components/model_data/model_data.c
     ${ROOT}/components/entity_extractor/entity_extractor.c
+    ${ROOT}/components/entity_extractor/slot_extractor.c
     ${ROOT}/components/automation/button_fsm.c
     ${ROOT}/components/automation/Automation.c
     ${ROOT}/components/sensor_manager/SensorManager.c
@@ -47,6 +48,7 @@ add_executable(host_tests
     test_gpio.c
     test_pin_manager.c
     test_entity.c
+    test_extractor.c
     test_command_engine.c
     test_sensor_automation.c
     test_console.c
@@ -71,6 +73,12 @@ if (MSVC)
     target_compile_options(host_tests PRIVATE /W4)
 else()
     target_compile_options(host_tests PRIVATE -Wall -Wextra -Wpedantic)
+endif()
+
+option(ENABLE_SANITIZERS "Enable AddressSanitizer and UndefinedBehaviorSanitizer" OFF)
+if(ENABLE_SANITIZERS AND NOT MSVC)
+    target_compile_options(host_tests PRIVATE -fsanitize=address,undefined -fno-omit-frame-pointer)
+    target_link_options(host_tests PRIVATE -fsanitize=address,undefined)
 endif()
 
 target_link_libraries(host_tests PRIVATE m)

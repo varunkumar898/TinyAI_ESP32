@@ -1,0 +1,4 @@
+# Test configuration: Comprehensive heap poisoning and Stack-overflow check method 2 (Canary)
+CONFIG_FREERTOS_CHECK_STACKOVERFLOW_CANARY=y
+CONFIG_COMPILER_STACK_CHECK_MODE_STRONG=y
+CONFIG_HEAP_POISONING_COMPREHENSIVE=y

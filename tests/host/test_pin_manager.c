@@ -2,7 +2,18 @@
 
 #include "GPIO_Sim.h"
 #include "PinManager.h"
+#include "board_profile.h"
 #include "device_registry.h"
+
+static char s_last_blink_notify[128];
+static void mock_blink_notify(void *ctx, const char *msg)
+{
+    (void)ctx;
+    if (msg != NULL) {
+        strncpy(s_last_blink_notify, msg, sizeof(s_last_blink_notify) - 1);
+        s_last_blink_notify[sizeof(s_last_blink_notify) - 1] = '\0';
+    }
+}
 
 static uint8_t find_pin(const pm_pin_status_t *pins, size_t n, const char *name)
 {
@@ -215,4 +226,184 @@ void test_pin_manager(void)
     TEST_EQ_INT(PM_OK, pin_manager_get_status(23, &status));
     TEST_ASSERT(!status.initialized);
     TEST_ASSERT(!GPIO_SimGetOutputEnable(23));
+
+    TEST_CASE("pin manager lock acquire and release paths are balanced");
+    pin_manager_test_reset_lock_state();
+    uint32_t locks = 0, unlocks = 0;
+    bool is_locked = false;
+
+    /* Successful calls */
+    TEST_EQ_INT(PM_OK, pin_manager_pin_init(18, GPIO_MODE_OUTPUT, GPIO_PULL_NONE));
+    pin_manager_test_get_lock_state(&locks, &unlocks, &is_locked);
+    TEST_EQ_INT(locks, unlocks);
+    TEST_ASSERT(!is_locked);
+
+    TEST_EQ_INT(PM_OK, pin_manager_assign(18, "fan1", true, true, false));
+    pin_manager_test_get_lock_state(&locks, &unlocks, &is_locked);
+    TEST_EQ_INT(locks, unlocks);
+    TEST_ASSERT(!is_locked);
+
+    TEST_EQ_INT(PM_OK, pin_manager_output(18, true, PM_ORIGIN_LOCAL, "on", 1.0f, "test"));
+    pin_manager_test_get_lock_state(&locks, &unlocks, &is_locked);
+    TEST_EQ_INT(locks, unlocks);
+    TEST_ASSERT(!is_locked);
+
+    TEST_EQ_INT(PM_OK, pin_manager_toggle(18, PM_ORIGIN_LOCAL, "toggle", 1.0f, "test"));
+    pin_manager_test_get_lock_state(&locks, &unlocks, &is_locked);
+    TEST_EQ_INT(locks, unlocks);
+    TEST_ASSERT(!is_locked);
+
+    /* Lock timeout simulation: must return error immediately without touching state */
+    pin_manager_test_set_lock_fail(true);
+    TEST_EQ_INT(PM_ERR_HARDWARE, pin_manager_pin_init(19, GPIO_MODE_OUTPUT, GPIO_PULL_NONE));
+    TEST_EQ_INT(PM_ERR_HARDWARE, pin_manager_output(18, false, PM_ORIGIN_LOCAL, "off", 1.0f, "test"));
+    pin_manager_test_set_lock_fail(false);
+    pin_manager_test_get_lock_state(&locks, &unlocks, &is_locked);
+    TEST_EQ_INT(locks, unlocks);
+    TEST_ASSERT(!is_locked);
+
+    bool phys = false, log_st = false;
+    TEST_EQ_INT(PM_OK, pin_manager_read(18, &phys, &log_st));
+    pin_manager_test_get_lock_state(&locks, &unlocks, &is_locked);
+    TEST_EQ_INT(locks, unlocks);
+    TEST_ASSERT(!is_locked);
+
+    TEST_EQ_INT(PM_OK, pin_manager_set_locked(18, true));
+    pin_manager_test_get_lock_state(&locks, &unlocks, &is_locked);
+    TEST_EQ_INT(locks, unlocks);
+    TEST_ASSERT(!is_locked);
+
+    /* Error and early return paths */
+    TEST_EQ_INT(PM_ERR_INVALID_PIN, pin_manager_pin_init(40, GPIO_MODE_OUTPUT, GPIO_PULL_NONE));
+    pin_manager_test_get_lock_state(&locks, &unlocks, &is_locked);
+    TEST_EQ_INT(locks, unlocks);
+    TEST_ASSERT(!is_locked);
+
+    TEST_EQ_INT(PM_ERR_ALREADY_INITIALIZED, pin_manager_pin_init(18, GPIO_MODE_OUTPUT, GPIO_PULL_NONE));
+    pin_manager_test_get_lock_state(&locks, &unlocks, &is_locked);
+    TEST_EQ_INT(locks, unlocks);
+    TEST_ASSERT(!is_locked);
+
+    TEST_EQ_INT(PM_ERR_LOCKED, pin_manager_output(18, true, PM_ORIGIN_LOCAL, "on", 1.0f, "test"));
+    pin_manager_test_get_lock_state(&locks, &unlocks, &is_locked);
+    TEST_EQ_INT(locks, unlocks);
+    TEST_ASSERT(!is_locked);
+
+    TEST_EQ_INT(PM_ERR_LOCKED, pin_manager_pin_deinit(18));
+    pin_manager_test_get_lock_state(&locks, &unlocks, &is_locked);
+    TEST_EQ_INT(locks, unlocks);
+    TEST_ASSERT(!is_locked);
+
+    TEST_EQ_INT(PM_OK, pin_manager_set_locked(18, false));
+    pin_manager_test_get_lock_state(&locks, &unlocks, &is_locked);
+    TEST_EQ_INT(locks, unlocks);
+    TEST_ASSERT(!is_locked);
+
+    TEST_EQ_INT(PM_OK, pin_manager_release(18));
+    pin_manager_test_get_lock_state(&locks, &unlocks, &is_locked);
+    TEST_EQ_INT(locks, unlocks);
+    TEST_ASSERT(!is_locked);
+
+    TEST_EQ_INT(PM_OK, pin_manager_pin_deinit(18));
+    pin_manager_test_get_lock_state(&locks, &unlocks, &is_locked);
+    TEST_EQ_INT(locks, unlocks);
+    TEST_ASSERT(!is_locked);
+
+    TEST_EQ_INT(PM_ERR_UNINITIALIZED, pin_manager_pin_deinit(18));
+    pin_manager_test_get_lock_state(&locks, &unlocks, &is_locked);
+    TEST_EQ_INT(locks, unlocks);
+    TEST_ASSERT(!is_locked);
+
+    /* Group error and success paths */
+    TEST_EQ_INT(PM_OK, pin_manager_create_group("testgrp"));
+    pin_manager_test_get_lock_state(&locks, &unlocks, &is_locked);
+    TEST_EQ_INT(locks, unlocks);
+    TEST_ASSERT(!is_locked);
+
+    TEST_EQ_INT(PM_ERR_NAME_CONFLICT, pin_manager_create_group("testgrp"));
+    pin_manager_test_get_lock_state(&locks, &unlocks, &is_locked);
+    TEST_EQ_INT(locks, unlocks);
+    TEST_ASSERT(!is_locked);
+
+    TEST_EQ_INT(PM_ERR_NOT_FOUND, pin_manager_group_apply("nonexistent", true, true, PM_ORIGIN_LOCAL, "on", 1.0f, "test", NULL));
+    pin_manager_test_get_lock_state(&locks, &unlocks, &is_locked);
+    TEST_EQ_INT(locks, unlocks);
+    TEST_ASSERT(!is_locked);
+
+    TEST_EQ_INT(PM_ERR_NOT_CONFIGURED, pin_manager_group_apply("testgrp", true, true, PM_ORIGIN_LOCAL, "on", 1.0f, "test", NULL));
+    pin_manager_test_get_lock_state(&locks, &unlocks, &is_locked);
+    TEST_EQ_INT(locks, unlocks);
+    TEST_ASSERT(!is_locked);
+
+    TEST_CASE("timed GPIO2 blink and scoped session authorization");
+    board_profile_set_gpio2_authorized(false);
+    TEST_ASSERT(!board_profile_is_gpio2_authorized());
+
+    /* Denied path: without authorization GPIO2 cannot blink */
+    TEST_EQ_INT(PM_ERR_RESERVED, pin_manager_blink_start(2, 1000, mock_blink_notify, NULL));
+    TEST_ASSERT(!GPIO_SimGetOutputLatch(2));
+    TEST_ASSERT(!pin_manager_blink_is_active(NULL));
+
+    /* Approved path: with authorization GPIO2 blinks and returns to inactive */
+    board_profile_set_gpio2_authorized(true);
+    TEST_ASSERT(board_profile_is_gpio2_authorized());
+
+    s_last_blink_notify[0] = '\0';
+    pin_manager_test_set_time(1000);
+    TEST_EQ_INT(PM_OK, pin_manager_blink_start(2, 1000, mock_blink_notify, NULL));
+    TEST_ASSERT(GPIO_SimGetOutputLatch(2));
+
+    uint8_t active_pin = 0;
+    TEST_ASSERT(pin_manager_blink_is_active(&active_pin));
+    TEST_EQ_INT(2, active_pin);
+
+    /* Still active before duration elapses */
+    pin_manager_test_set_time(1500);
+    pin_manager_blink_update(1500);
+    TEST_ASSERT(pin_manager_blink_is_active(&active_pin));
+    TEST_ASSERT(GPIO_SimGetOutputLatch(2));
+
+    /* Duration elapsed -> completes and drives GPIO2 inactive (LOW) */
+    pin_manager_test_set_time(2000);
+    pin_manager_blink_update(2000);
+    TEST_ASSERT(!pin_manager_blink_is_active(NULL));
+    TEST_ASSERT(!GPIO_SimGetOutputLatch(2));
+    TEST_EQ_STR("Execution: completed\n", s_last_blink_notify);
+
+    /* Cancel path: cancel active blink returns pin to inactive */
+    s_last_blink_notify[0] = '\0';
+    pin_manager_test_set_time(3000);
+    TEST_EQ_INT(PM_OK, pin_manager_blink_start(2, 5000, mock_blink_notify, NULL));
+    TEST_ASSERT(GPIO_SimGetOutputLatch(2));
+    TEST_ASSERT(pin_manager_blink_is_active(&active_pin));
+
+    TEST_EQ_INT(PM_OK, pin_manager_blink_cancel(mock_blink_notify, NULL));
+    TEST_ASSERT(!pin_manager_blink_is_active(NULL));
+    TEST_ASSERT(!GPIO_SimGetOutputLatch(2));
+    TEST_EQ_STR("Execution: cancelled\n", s_last_blink_notify);
+
+    /* Invalid durations */
+    TEST_EQ_INT(PM_ERR_INVALID_ARGUMENT, pin_manager_blink_start(2, 0, mock_blink_notify, NULL));
+    TEST_ASSERT(!GPIO_SimGetOutputLatch(2));
+    TEST_EQ_INT(PM_ERR_INVALID_ARGUMENT, pin_manager_blink_start(2, 60001, mock_blink_notify, NULL));
+    TEST_ASSERT(!GPIO_SimGetOutputLatch(2));
+    TEST_EQ_INT(PM_ERR_INVALID_PIN, pin_manager_blink_start(40, 1000, mock_blink_notify, NULL));
+
+    /* Strapping protection invariant: other strapping pins cannot blink */
+    TEST_EQ_INT(PM_ERR_RESERVED, pin_manager_blink_start(0, 1000, mock_blink_notify, NULL));
+    TEST_EQ_INT(PM_ERR_RESERVED, pin_manager_blink_start(5, 1000, mock_blink_notify, NULL));
+    TEST_EQ_INT(PM_ERR_RESERVED, pin_manager_blink_start(12, 1000, mock_blink_notify, NULL));
+    TEST_EQ_INT(PM_ERR_RESERVED, pin_manager_blink_start(15, 1000, mock_blink_notify, NULL));
+    TEST_EQ_INT(PM_ERR_RESERVED, pin_manager_blink_start(6, 1000, mock_blink_notify, NULL));
+    TEST_EQ_INT(PM_ERR_RESERVED, pin_manager_blink_start(1, 1000, mock_blink_notify, NULL));
+    TEST_ASSERT(!GPIO_SimGetOutputLatch(0));
+    TEST_ASSERT(!GPIO_SimGetOutputLatch(5));
+    TEST_ASSERT(!GPIO_SimGetOutputLatch(12));
+    TEST_ASSERT(!GPIO_SimGetOutputLatch(15));
+    TEST_ASSERT(!GPIO_SimGetOutputLatch(6));
+    TEST_ASSERT(!GPIO_SimGetOutputLatch(1));
+
+    /* Revoke session authorization */
+    board_profile_set_gpio2_authorized(false);
+    TEST_ASSERT(!board_profile_is_gpio2_authorized());
 }
