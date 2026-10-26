@@ -18,8 +18,9 @@ venv/
 *.log
 *.tmp
 
-# OS/editor
+# OS/editor/tools cache
 .DS_Store
 Thumbs.db
 .vscode/
 .idea/
+.cache/
