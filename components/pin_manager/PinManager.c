@@ -57,35 +57,92 @@ static size_t s_log_count;
 static size_t s_log_head;
 static uint32_t s_log_next_seq = 1;
 
+typedef struct {
+    bool active;
+    uint8_t pin;
+    uint32_t start_ms;
+    uint32_t duration_ms;
+    pm_blink_notify_fn notify;
+    void *context;
 #ifdef ESP_PLATFORM
-static SemaphoreHandle_t s_mutex;
-static void pm_lock(void)
+    esp_timer_handle_t timer;
+#endif
+} pm_blink_state_t;
+
+static pm_blink_state_t s_blink;
+
+#ifdef ESP_PLATFORM
+static StaticSemaphore_t s_mutex_buffer;
+static SemaphoreHandle_t s_mutex = NULL;
+
+static void pm_ensure_mutex(void)
 {
-    if (s_mutex != NULL) {
-        (void)xSemaphoreTake(s_mutex, portMAX_DELAY);
+    if (s_mutex == NULL) {
+        s_mutex = xSemaphoreCreateMutexStatic(&s_mutex_buffer);
     }
 }
+
+static void pm_lock(void)
+{
+    pm_ensure_mutex();
+    if (s_mutex != NULL) {
+        /* Bounded wait: register/memory accesses under pm_lock take < 100 microseconds.
+         * 1000 ms timeout guarantees we never stall the watchdog or freeze FreeRTOS. */
+        (void)xSemaphoreTake(s_mutex, pdMS_TO_TICKS(1000));
+    }
+}
+
 static void pm_unlock(void)
 {
     if (s_mutex != NULL) {
         (void)xSemaphoreGive(s_mutex);
     }
 }
+
 static uint32_t pm_now_ms(void)
 {
     return (uint32_t)(esp_timer_get_time() / 1000);
 }
 #else
 static uint32_t s_host_now_ms;
-static void pm_lock(void) {}
-static void pm_unlock(void) {}
+static uint32_t s_host_lock_count = 0;
+static uint32_t s_host_unlock_count = 0;
+static bool s_host_is_locked = false;
+
+static void pm_lock(void)
+{
+    s_host_lock_count++;
+    s_host_is_locked = true;
+}
+
+static void pm_unlock(void)
+{
+    s_host_unlock_count++;
+    s_host_is_locked = false;
+}
+
 static uint32_t pm_now_ms(void)
 {
     return s_host_now_ms;
 }
+
 void pin_manager_test_set_time(uint32_t now_ms)
 {
     s_host_now_ms = now_ms;
+}
+
+void pin_manager_test_get_lock_state(uint32_t *lock_count, uint32_t *unlock_count, bool *is_locked)
+{
+    if (lock_count != NULL) *lock_count = s_host_lock_count;
+    if (unlock_count != NULL) *unlock_count = s_host_unlock_count;
+    if (is_locked != NULL) *is_locked = s_host_is_locked;
+}
+
+void pin_manager_test_reset_lock_state(void)
+{
+    s_host_lock_count = 0;
+    s_host_unlock_count = 0;
+    s_host_is_locked = false;
 }
 #endif
 
@@ -390,11 +447,9 @@ pm_status_t pin_manager_validate_pin(uint8_t pin, GPIO_Mode mode, GPIO_Pull pull
 pm_status_t pin_manager_init(void)
 {
 #ifdef ESP_PLATFORM
+    pm_ensure_mutex();
     if (s_mutex == NULL) {
-        s_mutex = xSemaphoreCreateMutex();
-        if (s_mutex == NULL) {
-            return PM_ERR_NO_SPACE;
-        }
+        return PM_ERR_NO_SPACE;
     }
 #endif
     pm_lock();
@@ -414,6 +469,14 @@ pm_status_t pin_manager_init(void)
 
 static pm_status_t safe_reset_locked(void)
 {
+    if (s_blink.active) {
+        s_blink.active = false;
+#ifdef ESP_PLATFORM
+        if (s_blink.timer != NULL) {
+            esp_timer_stop(s_blink.timer);
+        }
+#endif
+    }
     uint64_t set_mask = 0;
     uint64_t clear_mask = 0;
     for (uint8_t pin = 0; pin < PM_MAX_PINS; ++pin) {
@@ -1806,5 +1869,170 @@ const char *pin_origin_name(pm_origin_t origin)
     case PM_ORIGIN_AUTOMATION: return "automation";
     case PM_ORIGIN_REMOTE: return "remote";
     default: return "unknown";
+    }
+}
+
+/* ------------------------------------------------------------------------- */
+/* Non-blocking timed pulse/blink                                            */
+/* ------------------------------------------------------------------------- */
+
+#ifdef ESP_PLATFORM
+static void blink_timer_cb(void *arg)
+{
+    (void)arg;
+    uint8_t pin = 0;
+    pm_blink_notify_fn notify = NULL;
+    void *context = NULL;
+    pm_lock();
+    if (s_blink.active) {
+        pin = s_blink.pin;
+        notify = s_blink.notify;
+        context = s_blink.context;
+        s_blink.active = false;
+        pm_unlock();
+        (void)pin_manager_output(pin, false, PM_ORIGIN_LOCAL, "blink-off", 1.0f, "console");
+        if (notify != NULL) {
+            notify(context, "Execution: completed\n");
+        }
+    } else {
+        pm_unlock();
+    }
+}
+#endif
+
+pm_status_t pin_manager_blink_start(uint8_t pin, uint32_t duration_ms,
+                                    pm_blink_notify_fn notify, void *context)
+{
+    if (pin >= PM_MAX_PINS) {
+        return PM_ERR_INVALID_PIN;
+    }
+    if (duration_ms < 1 || duration_ms > 60000) {
+        return PM_ERR_INVALID_ARGUMENT;
+    }
+
+    if (pin == 2 && !board_profile_is_gpio2_authorized()) {
+        return PM_ERR_RESERVED;
+    }
+
+    pm_status_t status = PM_OK;
+    pm_pin_status_t pin_status;
+    status = pin_manager_get_status(pin, &pin_status);
+    if (status != PM_OK) {
+        return status;
+    }
+    if (!pin_status.initialized) {
+        status = pin_manager_pin_init(pin, GPIO_MODE_OUTPUT, GPIO_PULL_NONE);
+        if (status != PM_OK) {
+            return status;
+        }
+    } else if (pin_status.mode != GPIO_MODE_OUTPUT) {
+        return PM_ERR_DIRECTION;
+    } else if (pin_status.locked) {
+        return PM_ERR_LOCKED;
+    }
+
+    (void)pin_manager_blink_cancel(NULL, NULL);
+
+    status = pin_manager_output(pin, true, PM_ORIGIN_LOCAL, "blink", 1.0f, "console");
+    if (status != PM_OK) {
+        return status;
+    }
+
+    pm_lock();
+    s_blink.active = true;
+    s_blink.pin = pin;
+    s_blink.start_ms = pm_now_ms();
+    s_blink.duration_ms = duration_ms;
+    s_blink.notify = notify;
+    s_blink.context = context;
+
+#ifdef ESP_PLATFORM
+    if (s_blink.timer == NULL) {
+        const esp_timer_create_args_t timer_args = {
+            .callback = blink_timer_cb,
+            .name = "pm_blink"
+        };
+        esp_err_t err = esp_timer_create(&timer_args, &s_blink.timer);
+        if (err != ESP_OK) {
+            s_blink.active = false;
+            pm_unlock();
+            (void)pin_manager_output(pin, false, PM_ORIGIN_LOCAL, "blink-err", 1.0f, "console");
+            return PM_ERR_HARDWARE;
+        }
+    }
+    (void)esp_timer_stop(s_blink.timer);
+    (void)esp_timer_start_once(s_blink.timer, (uint64_t)duration_ms * 1000ULL);
+#endif
+    pm_unlock();
+
+    return PM_OK;
+}
+
+pm_status_t pin_manager_blink_cancel(pm_blink_notify_fn notify, void *context)
+{
+    uint8_t pin = 0;
+    bool was_active = false;
+    pm_lock();
+    if (s_blink.active) {
+        was_active = true;
+        pin = s_blink.pin;
+        s_blink.active = false;
+#ifdef ESP_PLATFORM
+        if (s_blink.timer != NULL) {
+            (void)esp_timer_stop(s_blink.timer);
+        }
+#endif
+    }
+    pm_unlock();
+
+    if (was_active) {
+        (void)pin_manager_output(pin, false, PM_ORIGIN_LOCAL, "blink-cancel", 1.0f, "console");
+        if (notify != NULL) {
+            notify(context, "Execution: cancelled\n");
+        }
+    }
+    return PM_OK;
+}
+
+bool pin_manager_blink_is_active(uint8_t *active_pin)
+{
+    pm_lock();
+    bool active = s_blink.active;
+    if (active && active_pin != NULL) {
+        *active_pin = s_blink.pin;
+    }
+    pm_unlock();
+    return active;
+}
+
+void pin_manager_blink_update(uint32_t now_ms)
+{
+    uint8_t pin = 0;
+    pm_blink_notify_fn notify = NULL;
+    void *context = NULL;
+    bool expired = false;
+
+    pm_lock();
+    if (s_blink.active) {
+        if (now_ms >= s_blink.start_ms + s_blink.duration_ms) {
+            expired = true;
+            pin = s_blink.pin;
+            notify = s_blink.notify;
+            context = s_blink.context;
+            s_blink.active = false;
+#ifdef ESP_PLATFORM
+            if (s_blink.timer != NULL) {
+                (void)esp_timer_stop(s_blink.timer);
+            }
+#endif
+        }
+    }
+    pm_unlock();
+
+    if (expired) {
+        (void)pin_manager_output(pin, false, PM_ORIGIN_LOCAL, "blink-off", 1.0f, "console");
+        if (notify != NULL) {
+            notify(context, "Execution: completed\n");
+        }
     }
 }

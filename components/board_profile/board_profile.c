@@ -12,6 +12,8 @@
 static const char *TAG = "board";
 #endif
 
+static bool s_gpio2_authorized = false;
+
 typedef struct {
     bool present;
     bool input_only;
@@ -156,8 +158,9 @@ bool board_profile_get_pin_caps(uint8_t pin, board_pin_caps_t *caps)
     caps->adc2 = s->adc2;
     caps->boot_strap = s->boot_strap;
     caps->module_reserved = s->module_reserved;
-    caps->reserved = s->flash || s->uart0 || s->module_reserved || s->boot_strap;
-    caps->reserved_reason = pin_reserved_reason(pin);
+    bool strap_reserved = s->boot_strap && !(pin == 2 && s_gpio2_authorized);
+    caps->reserved = s->flash || s->uart0 || s->module_reserved || strap_reserved;
+    caps->reserved_reason = (pin == 2 && s_gpio2_authorized) ? "" : pin_reserved_reason(pin);
     return s->present;
 }
 
@@ -181,7 +184,9 @@ board_pin_issue_t board_profile_check_pin(uint8_t pin, bool output, bool pull_up
         return BOARD_PIN_MODULE_RESERVED;
     }
     if (s->boot_strap) {
-        return BOARD_PIN_STRAPPING;
+        if (!(pin == 2 && s_gpio2_authorized)) {
+            return BOARD_PIN_STRAPPING;
+        }
     }
     if (output && s->input_only) {
         return BOARD_PIN_INPUT_ONLY;
@@ -190,6 +195,16 @@ board_pin_issue_t board_profile_check_pin(uint8_t pin, bool output, bool pull_up
         return BOARD_PIN_NO_PULL;
     }
     return BOARD_PIN_OK;
+}
+
+bool board_profile_is_gpio2_authorized(void)
+{
+    return s_gpio2_authorized;
+}
+
+void board_profile_set_gpio2_authorized(bool authorized)
+{
+    s_gpio2_authorized = authorized;
 }
 
 const char *board_profile_issue_name(board_pin_issue_t issue)
