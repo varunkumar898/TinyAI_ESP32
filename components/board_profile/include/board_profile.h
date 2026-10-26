@@ -82,6 +82,10 @@ const char *board_profile_issue_hint(board_pin_issue_t issue);
 /* Human-readable pin table line for the serial console. */
 void board_profile_format_pin(uint8_t pin, char *out, size_t out_size);
 
+/* Scoped session-only authorization for GPIO2 (strapping pin). Does not persist. */
+bool board_profile_is_gpio2_authorized(void);
+void board_profile_set_gpio2_authorized(bool authorized);
+
 #ifdef __cplusplus
 }
 #endif

@@ -286,4 +286,79 @@ void test_console(void)
     TEST_ASSERT(output_has(&capture, "NVS unavailable in host build"));
     TEST_EQ_INT(0, run_command(&capture, "save"));
     TEST_ASSERT(output_has(&capture, "Config save: unsupported"));
+
+    TEST_CASE("bounded console formatting with oversized and malformed input");
+    char long_line[3000];
+    memset(long_line, 'a', sizeof(long_line) - 1);
+    long_line[sizeof(long_line) - 1] = '\0';
+    TEST_EQ_INT(-1, run_command(&capture, long_line));
+    TEST_ASSERT(capture.used > 0);
+    TEST_ASSERT(capture.used < sizeof(capture.text));
+    TEST_ASSERT(output_has(&capture, "Command line too long"));
+
+    TEST_EQ_INT(-1, run_command(&capture, ""));
+    TEST_EQ_INT(-1, run_command(&capture, "   \t  \r  "));
+    TEST_EQ_INT(-1, run_command(&capture, "\""));
+    TEST_EQ_INT(-1, run_command(&capture, "pin \"unclosed_quote"));
+    TEST_EQ_INT(-1, run_command(&capture, "do \"unclosed text in do command"));
+    TEST_EQ_INT(0, run_command(&capture, "heap"));
+    TEST_ASSERT(output_has(&capture, "Heap: free="));
+
+    TEST_CASE("console timed GPIO2 blink and scoped session authorization");
+    run_command(&capture, "gpio revoke 2");
+    TEST_ASSERT(output_has(&capture, "GPIO2 session authorization revoked"));
+
+    run_command(&capture, "gpio blink 2 1000");
+    TEST_ASSERT(output_has(&capture, "Target: GPIO2 | Duration: 1000 ms | Validation: denied"));
+    TEST_ASSERT(!GPIO_SimGetOutputLatch(2));
+
+    run_command(&capture, "gpio authorize 2");
+    TEST_ASSERT(output_has(&capture, "GPIO2 session authorization granted"));
+
+    pin_manager_test_set_time(1000);
+    run_command(&capture, "gpio blink 2 1000");
+    TEST_ASSERT(output_has(&capture, "Target: GPIO2 | Duration: 1000 ms | Validation: approved"));
+    TEST_ASSERT(output_has(&capture, "Execution: started"));
+    TEST_ASSERT(GPIO_SimGetOutputLatch(2));
+
+    pin_manager_test_set_time(2000);
+    pin_manager_blink_update(2000);
+    TEST_ASSERT(!GPIO_SimGetOutputLatch(2));
+
+    pin_manager_test_set_time(3000);
+    run_command(&capture, "gpio blink 2 5000");
+    TEST_ASSERT(output_has(&capture, "Execution: started"));
+    TEST_ASSERT(GPIO_SimGetOutputLatch(2));
+
+    run_command(&capture, "gpio blink cancel");
+    TEST_ASSERT(output_has(&capture, "Execution: cancelled"));
+    TEST_ASSERT(!GPIO_SimGetOutputLatch(2));
+
+    run_command(&capture, "gpio blink 2 0");
+    TEST_ASSERT(output_has(&capture, "Validation: rejected"));
+    TEST_ASSERT(!GPIO_SimGetOutputLatch(2));
+
+    run_command(&capture, "gpio blink 2 999999");
+    TEST_ASSERT(output_has(&capture, "Validation: rejected"));
+    TEST_ASSERT(!GPIO_SimGetOutputLatch(2));
+
+    run_command(&capture, "gpio blink 2 abc");
+    TEST_ASSERT(output_has(&capture, "Validation: rejected"));
+    TEST_ASSERT(!GPIO_SimGetOutputLatch(2));
+
+    run_command(&capture, "gpio authorize 0");
+    TEST_ASSERT(output_has(&capture, "Cannot authorize GPIO0: protected strapping pin"));
+    run_command(&capture, "gpio authorize 5");
+    TEST_ASSERT(output_has(&capture, "Cannot authorize GPIO5: protected strapping pin"));
+    run_command(&capture, "gpio authorize 12");
+    TEST_ASSERT(output_has(&capture, "Cannot authorize GPIO12: protected strapping pin"));
+    run_command(&capture, "gpio authorize 15");
+    TEST_ASSERT(output_has(&capture, "Cannot authorize GPIO15: protected strapping pin"));
+    run_command(&capture, "gpio authorize 6");
+    TEST_ASSERT(output_has(&capture, "Cannot authorize GPIO6: flash pins are hard-blocked"));
+    run_command(&capture, "gpio authorize 1");
+    TEST_ASSERT(output_has(&capture, "Cannot authorize GPIO1: UART0 console pins are hard-blocked"));
+
+    run_command(&capture, "gpio revoke 2");
+    TEST_ASSERT(output_has(&capture, "GPIO2 session authorization revoked"));
 }

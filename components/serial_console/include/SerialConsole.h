@@ -1,6 +1,7 @@
 #pragma once
 
 #include <stddef.h>
+#include <stdint.h>
 
 #ifdef __cplusplus
 extern "C" {
@@ -18,6 +19,9 @@ typedef void (*serial_console_output_fn)(void *context, const char *text);
 
 /* Starts the UART0 console task (ESP-IDF target only). Returns 0 on success. */
 int serial_console_start(void);
+
+/* Returns minimum free stack in bytes for console task (or 0 if unstarted/host). */
+uint32_t serial_console_get_stack_high_water_mark(void);
 
 /* Executes one line. If out is NULL, writes to stdout. Returns 0 when the
  * command was recognized, -1 for an empty/unknown command. */
