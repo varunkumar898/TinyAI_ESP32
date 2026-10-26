@@ -75,6 +75,12 @@ else()
     target_compile_options(host_tests PRIVATE -Wall -Wextra -Wpedantic)
 endif()
 
+option(ENABLE_SANITIZERS "Enable AddressSanitizer and UndefinedBehaviorSanitizer" OFF)
+if(ENABLE_SANITIZERS AND NOT MSVC)
+    target_compile_options(host_tests PRIVATE -fsanitize=address,undefined -fno-omit-frame-pointer)
+    target_link_options(host_tests PRIVATE -fsanitize=address,undefined)
+endif()
+
 target_link_libraries(host_tests PRIVATE m)
 
 add_executable(host_benchmark

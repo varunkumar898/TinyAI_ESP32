@@ -82,14 +82,15 @@ static void pm_ensure_mutex(void)
     }
 }
 
-static void pm_lock(void)
+static bool pm_lock(void)
 {
     pm_ensure_mutex();
-    if (s_mutex != NULL) {
-        /* Bounded wait: register/memory accesses under pm_lock take < 100 microseconds.
-         * 1000 ms timeout guarantees we never stall the watchdog or freeze FreeRTOS. */
-        (void)xSemaphoreTake(s_mutex, pdMS_TO_TICKS(1000));
+    if (s_mutex == NULL) {
+        return false;
     }
+    /* Bounded wait: register/memory accesses under pm_lock take < 100 microseconds.
+     * 1000 ms timeout guarantees we never stall the watchdog or freeze FreeRTOS. */
+    return (xSemaphoreTake(s_mutex, pdMS_TO_TICKS(1000)) == pdTRUE);
 }
 
 static void pm_unlock(void)
@@ -108,17 +109,27 @@ static uint32_t s_host_now_ms;
 static uint32_t s_host_lock_count = 0;
 static uint32_t s_host_unlock_count = 0;
 static bool s_host_is_locked = false;
+static bool s_host_force_lock_fail = false;
 
-static void pm_lock(void)
+static bool pm_lock(void)
 {
+    if (s_host_force_lock_fail) {
+        return false;
+    }
     s_host_lock_count++;
     s_host_is_locked = true;
+    return true;
 }
 
 static void pm_unlock(void)
 {
     s_host_unlock_count++;
     s_host_is_locked = false;
+}
+
+void pin_manager_test_set_lock_fail(bool fail)
+{
+    s_host_force_lock_fail = fail;
 }
 
 static uint32_t pm_now_ms(void)
@@ -143,8 +154,12 @@ void pin_manager_test_reset_lock_state(void)
     s_host_lock_count = 0;
     s_host_unlock_count = 0;
     s_host_is_locked = false;
+    s_host_force_lock_fail = false;
 }
 #endif
+
+#define PM_LOCK_OR_RETURN(err_val) do { if (!pm_lock()) { return (err_val); } } while (0)
+#define PM_LOCK_OR_RETURN_VOID() do { if (!pm_lock()) { return; } } while (0)
 
 static void copy_text(char *dst, size_t cap, const char *src)
 {
@@ -189,7 +204,7 @@ void pin_manager_log_event(pm_origin_t origin, const char *intent, float confide
                            int pin, const char *target, const char *source,
                            const char *result)
 {
-    pm_lock();
+    PM_LOCK_OR_RETURN_VOID();
     append_log_locked(origin, intent, confidence, pin, target, source, result);
     pm_unlock();
 }
@@ -199,7 +214,7 @@ size_t pin_manager_get_log(pm_action_log_entry_t *out, size_t capacity)
     if (out == NULL || capacity == 0) {
         return 0;
     }
-    pm_lock();
+    PM_LOCK_OR_RETURN(0);
     size_t copy = s_log_count < capacity ? s_log_count : capacity;
     size_t skip = s_log_count - copy;
     for (size_t i = 0; i < copy; ++i) {
@@ -213,7 +228,7 @@ size_t pin_manager_get_log(pm_action_log_entry_t *out, size_t capacity)
 
 void pin_manager_clear_log(void)
 {
-    pm_lock();
+    PM_LOCK_OR_RETURN_VOID();
     s_log_count = 0;
     s_log_head = 0;
     pm_unlock();
@@ -438,7 +453,7 @@ static pm_status_t validate_board_pin_locked(uint8_t pin, GPIO_Mode mode,
 pm_status_t pin_manager_validate_pin(uint8_t pin, GPIO_Mode mode, GPIO_Pull pull,
                                      char *reason, size_t reason_size)
 {
-    pm_lock();
+    PM_LOCK_OR_RETURN(PM_ERR_HARDWARE);
     pm_status_t status = validate_board_pin_locked(pin, mode, pull, reason, reason_size);
     pm_unlock();
     return status;
@@ -452,7 +467,7 @@ pm_status_t pin_manager_init(void)
         return PM_ERR_NO_SPACE;
     }
 #endif
-    pm_lock();
+    PM_LOCK_OR_RETURN(PM_ERR_HARDWARE);
     if (s_initialized) {
         pm_unlock();
         return PM_OK;
@@ -509,7 +524,7 @@ static pm_status_t safe_reset_locked(void)
 
 pm_status_t pin_manager_reset(void)
 {
-    pm_lock();
+    PM_LOCK_OR_RETURN(PM_ERR_HARDWARE);
     pm_status_t status = safe_reset_locked();
     append_log_locked(PM_ORIGIN_LOCAL, "reset", 1.0f, -1, "all-pins", "config",
                       status == PM_OK ? "safe-off; config cleared"
@@ -520,7 +535,7 @@ pm_status_t pin_manager_reset(void)
 
 pm_status_t pin_manager_pin_init(uint8_t pin, GPIO_Mode mode, GPIO_Pull pull)
 {
-    pm_lock();
+    PM_LOCK_OR_RETURN(PM_ERR_HARDWARE);
     pm_status_t status;
     if (pin >= PM_MAX_PINS) {
         status = PM_ERR_INVALID_PIN;
@@ -595,7 +610,7 @@ static pm_status_t drive_off_locked(pm_record_t *r, const char *intent,
 
 pm_status_t pin_manager_pin_deinit(uint8_t pin)
 {
-    pm_lock();
+    PM_LOCK_OR_RETURN(PM_ERR_HARDWARE);
     pm_status_t status = PM_OK;
     if (pin >= PM_MAX_PINS) {
         status = PM_ERR_INVALID_PIN;
@@ -644,7 +659,7 @@ pm_status_t pin_manager_assign(uint8_t pin, const char *name, bool active_high,
     if (!normalize_name(name, normalized, sizeof(normalized))) {
         return PM_ERR_NAME_INVALID;
     }
-    pm_lock();
+    PM_LOCK_OR_RETURN(PM_ERR_HARDWARE);
     pm_record_t *r = &s_records[pin];
     pm_status_t status = PM_OK;
     if (!r->initialized) {
@@ -728,7 +743,7 @@ pm_status_t pin_manager_release(uint8_t pin)
     if (pin >= PM_MAX_PINS) {
         return PM_ERR_INVALID_PIN;
     }
-    pm_lock();
+    PM_LOCK_OR_RETURN(PM_ERR_HARDWARE);
     pm_record_t *r = &s_records[pin];
     pm_status_t status = PM_OK;
     if (!r->initialized) {
@@ -762,7 +777,7 @@ pm_status_t pin_manager_add_alias(uint8_t pin, const char *alias)
     if (!normalize_name(alias, normalized, sizeof(normalized))) {
         return PM_ERR_NAME_INVALID;
     }
-    pm_lock();
+    PM_LOCK_OR_RETURN(PM_ERR_HARDWARE);
     pm_record_t *r = &s_records[pin];
     pm_status_t status = PM_OK;
     if (!r->configured) {
@@ -794,7 +809,7 @@ pm_status_t pin_manager_set_ai_allowed(uint8_t pin, bool allowed)
     if (pin >= PM_MAX_PINS) {
         return PM_ERR_INVALID_PIN;
     }
-    pm_lock();
+    PM_LOCK_OR_RETURN(PM_ERR_HARDWARE);
     pm_record_t *r = &s_records[pin];
     pm_status_t status = PM_OK;
     if (!r->configured) {
@@ -815,7 +830,7 @@ pm_status_t pin_manager_set_test_approved(uint8_t pin, bool approved)
     if (pin >= PM_MAX_PINS) {
         return PM_ERR_INVALID_PIN;
     }
-    pm_lock();
+    PM_LOCK_OR_RETURN(PM_ERR_HARDWARE);
     pm_record_t *r = &s_records[pin];
     pm_status_t status = PM_OK;
     if (!r->configured) {
@@ -838,7 +853,7 @@ pm_status_t pin_manager_set_locked(uint8_t pin, bool locked)
     if (pin >= PM_MAX_PINS) {
         return PM_ERR_INVALID_PIN;
     }
-    pm_lock();
+    PM_LOCK_OR_RETURN(PM_ERR_HARDWARE);
     pm_record_t *r = &s_records[pin];
     pm_status_t status = PM_OK;
     if (!r->initialized) {
@@ -956,7 +971,7 @@ pm_status_t pin_manager_output(uint8_t pin, bool logical_on, pm_origin_t origin,
     if (pin >= PM_MAX_PINS) {
         return PM_ERR_INVALID_PIN;
     }
-    pm_lock();
+    PM_LOCK_OR_RETURN(PM_ERR_HARDWARE);
     pm_status_t status = output_many_locked(&pin, 1, logical_on, false, origin,
                                             intent, confidence, source, NULL);
     pm_unlock();
@@ -969,7 +984,7 @@ pm_status_t pin_manager_toggle(uint8_t pin, pm_origin_t origin, const char *inte
     if (pin >= PM_MAX_PINS) {
         return PM_ERR_INVALID_PIN;
     }
-    pm_lock();
+    PM_LOCK_OR_RETURN(PM_ERR_HARDWARE);
     pm_record_t *r = &s_records[pin];
     pm_status_t status = check_control_locked(r, origin);
     if (status == PM_OK) {
@@ -986,7 +1001,7 @@ pm_status_t pin_manager_read(uint8_t pin, bool *physical_high, bool *logical_on)
     if (pin >= PM_MAX_PINS) {
         return PM_ERR_INVALID_PIN;
     }
-    pm_lock();
+    PM_LOCK_OR_RETURN(PM_ERR_HARDWARE);
     pm_record_t *r = &s_records[pin];
     pm_status_t status = PM_OK;
     if (!r->initialized) {
@@ -1015,7 +1030,7 @@ pm_status_t pin_manager_output_many(const uint8_t *pins, size_t count, bool logi
                                     const char *intent, float confidence,
                                     const char *source, size_t *affected)
 {
-    pm_lock();
+    PM_LOCK_OR_RETURN(PM_ERR_HARDWARE);
     pm_status_t status = output_many_locked(pins, count, logical_on, confirmed, origin,
                                             intent, confidence, source, affected);
     pm_unlock();
@@ -1053,7 +1068,7 @@ pm_status_t pin_manager_outputs_all_off(pm_origin_t origin, const char *source,
     if (origin != PM_ORIGIN_LOCAL) {
         return PM_ERR_UNSUPPORTED;
     }
-    pm_lock();
+    PM_LOCK_OR_RETURN(PM_ERR_HARDWARE);
     pm_record_t *records[PM_MAX_PINS];
     size_t count = collect_configured_outputs_locked(records, PM_MAX_PINS, false);
     if (count == 0) {
@@ -1079,7 +1094,7 @@ pm_status_t pin_manager_outputs_all_on(bool confirmed, const char *source,
     if (!confirmed) {
         return PM_ERR_CONFIRMATION;
     }
-    pm_lock();
+    PM_LOCK_OR_RETURN(PM_ERR_HARDWARE);
     pm_record_t *records[PM_MAX_PINS];
     size_t count = collect_configured_outputs_locked(records, PM_MAX_PINS, true);
     if (count == 0) {
@@ -1105,7 +1120,7 @@ pm_status_t pin_manager_get_status(uint8_t pin, pm_pin_status_t *status)
     if (pin >= PM_MAX_PINS) {
         return PM_ERR_INVALID_PIN;
     }
-    pm_lock();
+    PM_LOCK_OR_RETURN(PM_ERR_HARDWARE);
     fill_status_locked(&s_records[pin], status);
     pm_unlock();
     return PM_OK;
@@ -1116,7 +1131,7 @@ size_t pin_manager_list(pm_pin_status_t *out, size_t capacity, bool only_initial
     if (out == NULL || capacity == 0) {
         return 0;
     }
-    pm_lock();
+    PM_LOCK_OR_RETURN(0);
     size_t n = 0;
     for (uint8_t pin = 0; pin < PM_MAX_PINS && n < capacity; ++pin) {
         if (only_initialized && !s_records[pin].initialized) {
@@ -1138,7 +1153,7 @@ bool pin_manager_resolve_name(const char *name, uint8_t *pin)
     if (!normalize_name(name, normalized, sizeof(normalized))) {
         return false;
     }
-    pm_lock();
+    PM_LOCK_OR_RETURN(false);
     bool found = false;
     for (uint8_t i = 0; i < PM_MAX_PINS; ++i) {
         const pm_record_t *r = &s_records[i];
@@ -1178,7 +1193,7 @@ pm_status_t pin_manager_create_group(const char *name)
     if (!normalize_name(name, normalized, sizeof(normalized))) {
         return PM_ERR_NAME_INVALID;
     }
-    pm_lock();
+    PM_LOCK_OR_RETURN(PM_ERR_HARDWARE);
     pm_status_t status = PM_OK;
     if (s_group_count >= PM_MAX_GROUPS) {
         status = PM_ERR_NO_SPACE;
@@ -1207,7 +1222,7 @@ pm_status_t pin_manager_add_group_pin(const char *group, uint8_t pin)
     if (!normalize_name(group, normalized, sizeof(normalized))) {
         return PM_ERR_NAME_INVALID;
     }
-    pm_lock();
+    PM_LOCK_OR_RETURN(PM_ERR_HARDWARE);
     int gi = find_group_locked(normalized);
     pm_status_t status = PM_OK;
     pm_record_t *r = &s_records[pin];
@@ -1239,7 +1254,7 @@ pm_status_t pin_manager_remove_group_pin(const char *group, uint8_t pin)
     if (!normalize_name(group, normalized, sizeof(normalized))) {
         return PM_ERR_NAME_INVALID;
     }
-    pm_lock();
+    PM_LOCK_OR_RETURN(PM_ERR_HARDWARE);
     int gi = find_group_locked(normalized);
     pm_status_t status = PM_OK;
     if (gi < 0) {
@@ -1266,7 +1281,7 @@ pm_status_t pin_manager_get_group(const char *name, pm_group_status_t *group)
     if (!normalize_name(name, normalized, sizeof(normalized))) {
         return PM_ERR_NAME_INVALID;
     }
-    pm_lock();
+    PM_LOCK_OR_RETURN(PM_ERR_HARDWARE);
     int gi = find_group_locked(normalized);
     pm_status_t status = PM_OK;
     if (gi < 0) {
@@ -1290,7 +1305,7 @@ size_t pin_manager_list_groups(pm_group_status_t *out, size_t capacity)
     if (out == NULL || capacity == 0) {
         return 0;
     }
-    pm_lock();
+    PM_LOCK_OR_RETURN(0);
     size_t n = 0;
     for (size_t i = 0; i < s_group_count && n < capacity; ++i) {
         memset(&out[n], 0, sizeof(out[n]));
@@ -1319,7 +1334,7 @@ pm_status_t pin_manager_group_apply(const char *group, bool logical_on, bool con
     if (!normalize_name(group, normalized, sizeof(normalized))) {
         return PM_ERR_NAME_INVALID;
     }
-    pm_lock();
+    PM_LOCK_OR_RETURN(PM_ERR_HARDWARE);
     int gi = find_group_locked(normalized);
     if (gi < 0) {
         pm_unlock();
@@ -1436,7 +1451,13 @@ size_t pin_manager_export_config(uint8_t *buffer, size_t capacity, pm_status_t *
         .discard = buffer == NULL || capacity == 0,
         .overflow = false,
     };
-    pm_lock();
+    if (status != NULL) {
+        *status = PM_OK;
+    }
+    if (!pm_lock()) {
+        if (status != NULL) *status = PM_ERR_HARDWARE;
+        return 0;
+    }
     w_u16(&w, PM_CONFIG_SCHEMA_VERSION);
     uint8_t pin_count = 0;
     for (uint8_t pin = 0; pin < PM_MAX_PINS; ++pin) {
@@ -1759,7 +1780,7 @@ pm_status_t pin_manager_import_config(const uint8_t *buffer, size_t length)
     }
 
     /* Validation complete. Apply only now, replacing the runtime config. */
-    pm_lock();
+    PM_LOCK_OR_RETURN(PM_ERR_HARDWARE);
     pm_status_t reset_status = safe_reset_locked();
     if (reset_status != PM_OK) {
         pm_unlock();
@@ -1883,7 +1904,7 @@ static void blink_timer_cb(void *arg)
     uint8_t pin = 0;
     pm_blink_notify_fn notify = NULL;
     void *context = NULL;
-    pm_lock();
+    PM_LOCK_OR_RETURN_VOID();
     if (s_blink.active) {
         pin = s_blink.pin;
         notify = s_blink.notify;
@@ -1938,7 +1959,7 @@ pm_status_t pin_manager_blink_start(uint8_t pin, uint32_t duration_ms,
         return status;
     }
 
-    pm_lock();
+    PM_LOCK_OR_RETURN(PM_ERR_HARDWARE);
     s_blink.active = true;
     s_blink.pin = pin;
     s_blink.start_ms = pm_now_ms();
@@ -1972,7 +1993,7 @@ pm_status_t pin_manager_blink_cancel(pm_blink_notify_fn notify, void *context)
 {
     uint8_t pin = 0;
     bool was_active = false;
-    pm_lock();
+    PM_LOCK_OR_RETURN(PM_ERR_HARDWARE);
     if (s_blink.active) {
         was_active = true;
         pin = s_blink.pin;
@@ -1996,7 +2017,7 @@ pm_status_t pin_manager_blink_cancel(pm_blink_notify_fn notify, void *context)
 
 bool pin_manager_blink_is_active(uint8_t *active_pin)
 {
-    pm_lock();
+    PM_LOCK_OR_RETURN(false);
     bool active = s_blink.active;
     if (active && active_pin != NULL) {
         *active_pin = s_blink.pin;
@@ -2012,7 +2033,7 @@ void pin_manager_blink_update(uint32_t now_ms)
     void *context = NULL;
     bool expired = false;
 
-    pm_lock();
+    PM_LOCK_OR_RETURN_VOID();
     if (s_blink.active) {
         if (now_ms >= s_blink.start_ms + s_blink.duration_ms) {
             expired = true;

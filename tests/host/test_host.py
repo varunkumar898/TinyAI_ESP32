@@ -4,7 +4,17 @@ import subprocess
 import sys
 from pathlib import Path
 
-import pytest
+try:
+    import pytest
+except ImportError:
+    class _DummyMark:
+        def parametrize(self, *args, **kwargs):
+            def decorator(fn):
+                return fn
+            return decorator
+    class _DummyPytest:
+        mark = _DummyMark()
+    pytest = _DummyPytest()
 
 ROOT = Path(__file__).resolve().parent.parent.parent
 sys.path.insert(0, str(ROOT / "tools"))
@@ -140,6 +150,12 @@ EXTRACTOR_TEST_CASES = [
     ("turn on pin 50", "invalid", "pin"),
     ("turn on pin 99", "invalid", "pin"),
     ("turn on pin 256", "invalid", "pin"),
+    ("turn on pin 20", "invalid", "pin"),
+    ("turn on pin 24", "invalid", "pin"),
+    ("turn on pin 28", "invalid", "pin"),
+    ("turn on pin 29", "invalid", "pin"),
+    ("turn on pin 30", "invalid", "pin"),
+    ("turn on pin 31", "invalid", "pin"),
     ("pulse pin 4 for 0 ms", "invalid", "duration"),
     ("pulse pin 4 for 5000000 ms", "invalid", "duration"),
     ("blink pin 2 for 0 ms", "invalid", "duration"),
@@ -247,3 +263,14 @@ def test_extractor_dataset_coverage(text, expected_category, expected_detail):
     assert expected_category in {"valid", "missing", "invalid", "ambiguous", "safety"}
     if expected_category == "valid":
         assert expected_detail in INTENTS
+
+
+if __name__ == "__main__":
+    print("Running test_host_suite_binary()...")
+    test_host_suite_binary()
+    print("Running test_intents_single_source_of_truth()...")
+    test_intents_single_source_of_truth()
+    print(f"Running {len(EXTRACTOR_TEST_CASES)} extractor dataset coverage checks...")
+    for text, cat, detail in EXTRACTOR_TEST_CASES:
+        test_extractor_dataset_coverage(text, cat, detail)
+    print(f"PASS: All tests passed ({len(EXTRACTOR_TEST_CASES) + 2} test cases).")

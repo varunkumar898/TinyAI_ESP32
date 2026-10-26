@@ -189,6 +189,7 @@ void pin_manager_blink_update(uint32_t now_ms);
 void pin_manager_test_set_time(uint32_t now_ms);
 void pin_manager_test_get_lock_state(uint32_t *lock_count, uint32_t *unlock_count, bool *is_locked);
 void pin_manager_test_reset_lock_state(void);
+void pin_manager_test_set_lock_fail(bool fail);
 #endif
 
 #ifdef __cplusplus

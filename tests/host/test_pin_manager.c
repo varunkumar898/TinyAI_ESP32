@@ -253,6 +253,15 @@ void test_pin_manager(void)
     TEST_EQ_INT(locks, unlocks);
     TEST_ASSERT(!is_locked);
 
+    /* Lock timeout simulation: must return error immediately without touching state */
+    pin_manager_test_set_lock_fail(true);
+    TEST_EQ_INT(PM_ERR_HARDWARE, pin_manager_pin_init(19, GPIO_MODE_OUTPUT, GPIO_PULL_NONE));
+    TEST_EQ_INT(PM_ERR_HARDWARE, pin_manager_output(18, false, PM_ORIGIN_LOCAL, "off", 1.0f, "test"));
+    pin_manager_test_set_lock_fail(false);
+    pin_manager_test_get_lock_state(&locks, &unlocks, &is_locked);
+    TEST_EQ_INT(locks, unlocks);
+    TEST_ASSERT(!is_locked);
+
     bool phys = false, log_st = false;
     TEST_EQ_INT(PM_OK, pin_manager_read(18, &phys, &log_st));
     pin_manager_test_get_lock_state(&locks, &unlocks, &is_locked);

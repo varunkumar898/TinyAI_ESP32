@@ -28,7 +28,7 @@ static TaskHandle_t s_console_task_handle = NULL;
 #define CONSOLE_LINE_MAX 256
 #define CONSOLE_MAX_ARGS 16
 #define CONSOLE_PENDING_TIMEOUT_MS 60000u
-#define CONSOLE_TASK_STACK 6144
+#define CONSOLE_TASK_STACK 8192
 #define CONSOLE_OUT_BUF_MAX 2048
 
 typedef enum {
@@ -43,8 +43,16 @@ typedef struct {
     uint32_t created_ms;
 } console_pending_t;
 
+/*
+ * Static scratch buffers to prevent task stack bloat (saves > 10 KB of stack frame).
+ * NOTE: These buffers are strictly CONSOLE-TASK-ONLY. They are not protected by
+ * mutexes and must only be accessed sequentially from the single serial_console_task context.
+ */
 static console_pending_t s_pending;
 static char s_console_out_buffer[CONSOLE_OUT_BUF_MAX];
+static pm_pin_status_t s_pins_buf[PM_MAX_PINS];
+static pm_action_log_entry_t s_log_entries[PM_LOG_CAPACITY];
+static sensor_sample_t s_sensors_buf[SENSOR_MAX];
 
 static void outf(serial_console_output_fn out, void *context, const char *format, ...)
 {
@@ -413,20 +421,19 @@ static void command_pins(serial_console_output_fn out, void *context, size_t arg
 
 static void command_devices(serial_console_output_fn out, void *context)
 {
-    pm_pin_status_t pins[PM_MAX_PINS];
-    size_t count = pin_manager_list(pins, PM_MAX_PINS, true);
+    size_t count = pin_manager_list(s_pins_buf, PM_MAX_PINS, true);
     size_t shown = 0;
     for (size_t i = 0; i < count; ++i) {
-        if (!pins[i].configured) {
+        if (!s_pins_buf[i].configured) {
             continue;
         }
         ++shown;
-        outf(out, context, "  %-16s GPIO%-2u %-6s %s%s%s\n", pins[i].device_name,
-             (unsigned)pins[i].pin,
-             pins[i].mode == GPIO_MODE_OUTPUT ? "output" : "input",
-             pins[i].logical_state ? "ON" : "OFF",
-             pins[i].ai_allowed ? " ai" : " local",
-             pins[i].test_approved ? " test" : "");
+        outf(out, context, "  %-16s GPIO%-2u %-6s %s%s%s\n", s_pins_buf[i].device_name,
+             (unsigned)s_pins_buf[i].pin,
+             s_pins_buf[i].mode == GPIO_MODE_OUTPUT ? "output" : "input",
+             s_pins_buf[i].logical_state ? "ON" : "OFF",
+             s_pins_buf[i].ai_allowed ? " ai" : " local",
+             s_pins_buf[i].test_approved ? " test" : "");
     }
     if (shown == 0) {
         outf(out, context,
@@ -438,25 +445,24 @@ static void command_devices(serial_console_output_fn out, void *context)
 static void command_status(serial_console_output_fn out, void *context, size_t argc,
                            char **argv)
 {
-    pm_pin_status_t pins[PM_MAX_PINS];
     if (argc >= 2) {
         uint8_t pin = 0;
         if (!resolve_target_pin(argv[1], &pin)) {
             outf(out, context, "Unknown target '%s'.\n", argv[1]);
             return;
         }
-        if (pin_manager_get_status(pin, &pins[0]) != PM_OK) {
+        if (pin_manager_get_status(pin, &s_pins_buf[0]) != PM_OK) {
             outf(out, context, "Invalid GPIO%u.\n", (unsigned)pin);
             return;
         }
-        print_pin_detail(&pins[0], out, context);
+        print_pin_detail(&s_pins_buf[0], out, context);
         return;
     }
-    size_t count = pin_manager_list(pins, PM_MAX_PINS, true);
+    size_t count = pin_manager_list(s_pins_buf, PM_MAX_PINS, true);
     size_t shown = 0;
     for (size_t i = 0; i < count; ++i) {
-        if (pins[i].configured) {
-            print_pin_detail(&pins[i], out, context);
+        if (s_pins_buf[i].configured) {
+            print_pin_detail(&s_pins_buf[i], out, context);
             ++shown;
         }
     }
@@ -616,6 +622,22 @@ static void command_pin(serial_console_output_fn out, void *context, size_t argc
         command_assign(out, context, argc - 1, argv + 1);
         return;
     }
+    if (argc >= 4 && strcmp(argv[1], "write") == 0) {
+        uint32_t pin_value = 0;
+        if (!parse_u32(argv[2], 0, PM_MAX_PINS - 1, &pin_value)) {
+            outf(out, context, "GPIO must be 0..39.\n");
+            return;
+        }
+        uint8_t pin = (uint8_t)pin_value;
+        const char *val_str = argv[3];
+        bool on = (strcmp(val_str, "1") == 0 || strcmp(val_str, "high") == 0 || strcmp(val_str, "on") == 0);
+        pm_status_t status =
+            pin_manager_output(pin, on, PM_ORIGIN_LOCAL,
+                               on ? "PIN_ON" : "PIN_OFF", 1.0f, "console");
+        outf(out, context, "GPIO%u %s: %s.\n", (unsigned)pin,
+             on ? "ON" : "OFF", pin_manager_status_name(status));
+        return;
+    }
 
     size_t index = 1;
     if (argc >= 2 && strcmp(argv[1], "init") == 0) {
@@ -665,8 +687,11 @@ static void command_pin(serial_console_output_fn out, void *context, size_t argc
              physical ? "HIGH" : "LOW", logical ? "ON" : "OFF");
         return;
     }
-    if (strcmp(action, "on") == 0 || strcmp(action, "off") == 0) {
-        bool on = strcmp(action, "on") == 0;
+    if (strcmp(action, "on") == 0 || strcmp(action, "off") == 0 ||
+        strcmp(action, "1") == 0 || strcmp(action, "0") == 0 ||
+        strcmp(action, "high") == 0 || strcmp(action, "low") == 0) {
+        bool on = (strcmp(action, "on") == 0 || strcmp(action, "1") == 0 ||
+                   strcmp(action, "high") == 0);
         pm_status_t status =
             pin_manager_output(pin, on, PM_ORIGIN_LOCAL,
                                on ? "PIN_ON" : "PIN_OFF", 1.0f, "console");
@@ -1332,15 +1357,14 @@ static void command_log(serial_console_output_fn out, void *context, size_t argc
              (unsigned)PM_LOG_CAPACITY);
         return;
     }
-    pm_action_log_entry_t entries[PM_LOG_CAPACITY];
-    size_t count = pin_manager_get_log(entries, PM_LOG_CAPACITY);
+    size_t count = pin_manager_get_log(s_log_entries, PM_LOG_CAPACITY);
     if (count == 0) {
         outf(out, context, "Audit log is empty.\n");
         return;
     }
     size_t start = count > wanted ? count - wanted : 0;
     for (size_t i = start; i < count; ++i) {
-        pm_action_log_entry_t *e = &entries[i];
+        pm_action_log_entry_t *e = &s_log_entries[i];
         outf(out, context,
              "  #%lu %8lums %-10s %-20s %-16s %-16s -> %s (%.2f)\n",
              (unsigned long)e->seq, (unsigned long)e->timestamp_ms,
@@ -1670,15 +1694,14 @@ int serial_console_execute_line(const char *line, serial_console_output_fn out,
         return 0;
     }
     if (strcmp(argv[0], "sensors") == 0) {
-        sensor_sample_t sensors[SENSOR_MAX];
-        size_t count = sensor_manager_list(sensors, SENSOR_MAX);
+        size_t count = sensor_manager_list(s_sensors_buf, SENSOR_MAX);
         if (count == 0) {
             outf(out, context,
                  "No sensors. Example: pin 34 input; sensor add light adc1 34\n");
             return 0;
         }
         for (size_t i = 0; i < count; ++i) {
-            print_sensor_line(&sensors[i], out, context);
+            print_sensor_line(&s_sensors_buf[i], out, context);
         }
         return 0;
     }
@@ -1818,11 +1841,13 @@ static void console_task(void *argument)
     char line[CONSOLE_LINE_MAX];
     size_t length = 0;
     bool last_was_cr = false;
+    bool line_overflow = false;
     for (;;) {
         fputs("tinyai> ", stdout);
         fflush(stdout);
         length = 0;
         last_was_cr = false;
+        line_overflow = false;
         for (;;) {
             uint8_t ch = 0;
             int read = uart_read_bytes(UART_NUM_0, &ch, 1, pdMS_TO_TICKS(200));
@@ -1847,18 +1872,25 @@ static void console_task(void *argument)
                 continue;
             }
             if (ch >= 32 && ch < 127) {
-                if (length + 1 < sizeof(line)) {
+                if (!line_overflow && length + 1 < sizeof(line)) {
                     line[length++] = (char)ch;
                     fputc((int)ch, stdout);
                     fflush(stdout);
                 } else {
+                    line_overflow = true;
                     fputc('\a', stdout);
                     fflush(stdout);
                 }
             }
         }
         line[length] = '\0';
-        serial_console_execute_line(line, console_output, NULL);
+        if (line_overflow) {
+            outf(console_output, NULL,
+                 "Command line exceeded buffer limit (%u bytes). Discarded without execution.\n",
+                 (unsigned)(sizeof(line) - 1));
+        } else {
+            serial_console_execute_line(line, console_output, NULL);
+        }
     }
 }
 
@@ -1883,7 +1915,6 @@ int serial_console_start(void)
     }
     uart_vfs_dev_port_set_rx_line_endings(UART_NUM_0, ESP_LINE_ENDINGS_CR);
     uart_vfs_dev_port_set_tx_line_endings(UART_NUM_0, ESP_LINE_ENDINGS_CRLF);
-    uart_vfs_dev_use_driver(UART_NUM_0);
 
     BaseType_t created = xTaskCreate(console_task, "tinyai_cli", CONSOLE_TASK_STACK,
                                      NULL, 2, &s_console_task_handle);

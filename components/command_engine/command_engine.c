@@ -81,7 +81,9 @@ typedef struct {
 } pending_plan_t;
 
 static pending_plan_t s_pending;
+#if defined(CMD_AI_COMPILED)
 static const tinyml_model_t *s_model;
+#endif
 static bool s_ai_enabled;
 static bool s_initialized;
 #ifndef ESP_PLATFORM
@@ -435,6 +437,7 @@ static bool tokens_end_with_conjunction(const entity_set_t *entities)
            strcmp(last, "plus") == 0;
 }
 
+#if defined(CMD_AI_COMPILED)
 static command_intent_t map_intent(tinyml_intent_t intent)
 {
     switch (intent) {
@@ -448,6 +451,7 @@ static command_intent_t map_intent(tinyml_intent_t intent)
     default: return CMD_INTENT_UNKNOWN;
     }
 }
+#endif
 
 static bool intent_actuates(command_intent_t intent)
 {
@@ -1134,7 +1138,6 @@ void command_engine_init(bool ai_enabled)
     s_ai_enabled = ai_enabled && s_model != NULL;
 #else
     (void)ai_enabled;
-    s_model = NULL;
     s_ai_enabled = false;
 #endif
 }

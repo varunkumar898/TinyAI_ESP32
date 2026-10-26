@@ -239,9 +239,14 @@ static const uint32_t s_esp32_pin_caps[40] = {
     /* 39 */ PIN_CAP_INPUT | PIN_CAP_ADC1,
 };
 
+static bool is_nonexistent_pin(uint8_t pin)
+{
+    return (pin >= 40 || pin == 20 || pin == 24 || (pin >= 28 && pin <= 31));
+}
+
 uint32_t validator_get_pin_caps(uint8_t pin)
 {
-    if (pin >= 40) {
+    if (is_nonexistent_pin(pin)) {
         return PIN_CAP_NONE;
     }
     return s_esp32_pin_caps[pin];
@@ -270,7 +275,7 @@ validator_result_t validator_validate(const typed_command_t *cmd, bool allow_pro
         else if (cmd->intent == INTENT_GPIO_BLINK) pin = cmd->params.gpio_blink.pin;
         else if (cmd->intent == INTENT_GPIO_PULSE) pin = cmd->params.gpio_pulse.pin;
 
-        if (pin >= 40 || s_esp32_pin_caps[pin] == PIN_CAP_NONE) {
+        if (is_nonexistent_pin(pin) || s_esp32_pin_caps[pin] == PIN_CAP_NONE) {
             res.status = VALIDATE_ERR_NONEXISTENT_PIN;
             snprintf(res.reason, sizeof(res.reason), "GPIO%u does not exist on ESP32", pin);
             return res;
@@ -300,9 +305,9 @@ validator_result_t validator_validate(const typed_command_t *cmd, bool allow_pro
     }
     case INTENT_GPIO_READ: {
         uint8_t pin = cmd->params.gpio_read.pin;
-        if (pin >= 40 || s_esp32_pin_caps[pin] == PIN_CAP_NONE) {
+        if (is_nonexistent_pin(pin) || s_esp32_pin_caps[pin] == PIN_CAP_NONE) {
             res.status = VALIDATE_ERR_NONEXISTENT_PIN;
-            snprintf(res.reason, sizeof(res.reason), "GPIO%u does not exist", pin);
+            snprintf(res.reason, sizeof(res.reason), "GPIO%u does not exist on ESP32", pin);
             return res;
         }
         uint32_t caps = s_esp32_pin_caps[pin];
@@ -320,9 +325,9 @@ validator_result_t validator_validate(const typed_command_t *cmd, bool allow_pro
     }
     case INTENT_PWM: {
         uint8_t pin = cmd->params.pwm.pin;
-        if (pin >= 40 || s_esp32_pin_caps[pin] == PIN_CAP_NONE) {
+        if (is_nonexistent_pin(pin) || s_esp32_pin_caps[pin] == PIN_CAP_NONE) {
             res.status = VALIDATE_ERR_NONEXISTENT_PIN;
-            snprintf(res.reason, sizeof(res.reason), "GPIO%u does not exist", pin);
+            snprintf(res.reason, sizeof(res.reason), "GPIO%u does not exist on ESP32", pin);
             return res;
         }
         uint32_t caps = s_esp32_pin_caps[pin];
@@ -363,9 +368,9 @@ validator_result_t validator_validate(const typed_command_t *cmd, bool allow_pro
     }
     case INTENT_ADC_READ: {
         uint8_t pin = cmd->params.adc_read.pin;
-        if (pin >= 40 || s_esp32_pin_caps[pin] == PIN_CAP_NONE) {
+        if (is_nonexistent_pin(pin) || s_esp32_pin_caps[pin] == PIN_CAP_NONE) {
             res.status = VALIDATE_ERR_NONEXISTENT_PIN;
-            snprintf(res.reason, sizeof(res.reason), "GPIO%u does not exist", pin);
+            snprintf(res.reason, sizeof(res.reason), "GPIO%u does not exist on ESP32", pin);
             return res;
         }
         uint32_t caps = s_esp32_pin_caps[pin];
@@ -1024,7 +1029,8 @@ slot_result_t extractor_parse_command(const char *input)
     /* 3. Find Pins: check for gpio<N> tokens */
     uint8_t found_pins[8];
     size_t pin_count = 0;
-    bool pin_overflow = false;
+    bool pin_invalid = false;
+    uint32_t invalid_pin_num = 0;
 
     char text_copy[sizeof(norm.normalized)];
     memcpy(text_copy, text, sizeof(text_copy));
@@ -1035,8 +1041,9 @@ slot_result_t extractor_parse_command(const char *input)
             char *endp = NULL;
             unsigned long pval = strtoul(tok + 4, &endp, 10);
             if (endp != tok + 4 && *endp == '\0') {
-                if (pval >= 40) {
-                    pin_overflow = true;
+                if (is_nonexistent_pin((uint8_t)pval) || pval >= 40) {
+                    pin_invalid = true;
+                    invalid_pin_num = (uint32_t)pval;
                 }
                 if (pin_count < 8) {
                     found_pins[pin_count++] = (uint8_t)pval;
@@ -1046,10 +1053,10 @@ slot_result_t extractor_parse_command(const char *input)
         tok = strtok_r(NULL, " ", &saveptr);
     }
 
-    if (pin_overflow) {
+    if (pin_invalid) {
         res.status = SLOT_STATUS_INVALID;
         snprintf(res.slot_name, sizeof(res.slot_name), "pin");
-        snprintf(res.reason, sizeof(res.reason), "Pin number out of valid range (GPIO 0-39)");
+        snprintf(res.reason, sizeof(res.reason), "GPIO%u does not exist on ESP32", (unsigned)invalid_pin_num);
         res.command = cmd_make_unknown("invalid pin");
         return res;
     }

@@ -487,6 +487,20 @@ static void test_slot_extractor_errors_and_edge_cases(void)
     slot_result_t o2 = extractor_parse_command("turn on pin 99");
     TEST_EQ_INT(SLOT_STATUS_INVALID, o2.status);
 
+    /* Absent / Nonexistent ESP32 pins: 20, 24, 28-31 */
+    uint8_t absent_pins[] = {20, 24, 28, 29, 30, 31};
+    for (size_t i = 0; i < sizeof(absent_pins); ++i) {
+        char cmd_str[64];
+        snprintf(cmd_str, sizeof(cmd_str), "turn on pin %u", absent_pins[i]);
+        slot_result_t o_abs = extractor_parse_command(cmd_str);
+        TEST_EQ_INT(SLOT_STATUS_INVALID, o_abs.status);
+        TEST_EQ_STR("pin", o_abs.slot_name);
+
+        typed_command_t typed_abs = cmd_make_gpio_write(absent_pins[i], 1);
+        validator_result_t v_abs = validator_validate(&typed_abs, true);
+        TEST_EQ_INT(VALIDATE_ERR_NONEXISTENT_PIN, v_abs.status);
+    }
+
     /* Duration out of range */
     slot_result_t d1 = extractor_parse_command("pulse pin 4 for 0 ms");
     TEST_EQ_INT(SLOT_STATUS_INVALID, d1.status);

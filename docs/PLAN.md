@@ -51,8 +51,8 @@ Deferred: DAC, SPI, interrupts, rules, I2C read/write, SAVE_CONFIG.
 
 ### Milestone 1 & Milestone 2 (2026-10-26)
 - **Root Cause Analysis (M1)**:
-  1. *Repeated resets / stack overflow*: In `components/serial_console/SerialConsole.c`, `outf()` allocated `char buffer[4096]` on the stack while `CONSOLE_TASK_STACK` was 6,144 bytes. Nested CLI command handlers executing stdio formatting exceeded the stack limit, corrupting adjacent heap memory.
-  2. *UART ring-buffer assertion*: The stack overflow corrupted FreeRTOS heap memory containing UART0 ring-buffer control structures (`rx_ring_buf`). Additionally, UART0 driver was installed without checking `uart_is_driver_installed()` and without `uart_vfs_dev_use_driver(UART_NUM_0)`, causing stdout direct register writes to conflict concurrently with the UART ISR.
+  1. *Repeated resets / stack overflow*: The true root cause was a **7,504-byte stack frame (`entry a1, 0x1d50`)** in `serial_console_execute_line` caused by GCC inlining subcommand handlers that allocated large local stack buffers (`entries[PM_LOG_CAPACITY]` at ~6.4 KB, `pins[PM_MAX_PINS]` at ~4 KB, and `sensors[SENSOR_MAX]`). In a 6,144-byte task stack, this immediately blew past the stack boundary (measured as `0 bytes` free on hardware), overflowing directly into the adjacent FreeRTOS heap. Note: early M1 stack figures attributing the overflow solely to `outf()`'s 4,096-byte local buffer were theoretical estimates; disassembly and hardware backtrace analysis on COM13 proved the 7.5 KB frame was the actual failure mechanism.
+  2. *UART ring-buffer assertion*: The 7.5 KB stack overflow trampled FreeRTOS heap memory containing UART0 driver structures (`p_uart_obj[0]->rx_mux`), corrupting `uxItemSize`. Additionally, calling `uart_vfs_dev_use_driver(UART_NUM_0)` diverted stdout through unbuffered driver mutexes that conflicted with stderr.
   3. *Interrupt watchdog timeout on mutex*: Dynamic heap allocation `xSemaphoreCreateMutex()` for `s_mutex` in `PinManager.c` became corrupted by the stack overflow. In `xQueueSemaphoreTake`, entering `taskENTER_CRITICAL()` with corrupted pointers caused an infinite loop with interrupts disabled, triggering the hardware level-5 Interrupt Watchdog Timer (IWDT).
   4. *Lock held across console I/O*: In `Automation.c`, `AUTO_LOGW` logged to console while holding `automation_lock`, causing priority inversion and potential deadlock with console task.
 - **Fixes Applied (M1 & M2)**:
@@ -80,7 +80,9 @@ Deferred: DAC, SPI, interrupts, rules, I2C read/write, SAVE_CONFIG.
     - Bounded console formatting with oversized (3000 chars) and malformed input.
     - GPIO2 timed blink: authorized path, denied path, cancellation, invalid duration, and safe return to inactive state.
 - **Stack High-Water Mark**:
-  - Stack allocation in `outf()` reduced from 4,096 bytes to 0 bytes (moved to static bounded storage), freeing ~4 KB of task stack headroom.
+  - Initial M1 theoretical estimate indicated ~4 KB reclaimed. Actual hardware measurement on COM13 revealed `0 bytes` free prior to the complete fix.
+  - Relocating `pins`, `entries`, and `sensors` to dedicated static buffers reduced `serial_console_execute_line` from 7,504 bytes to 1,888 bytes (a 5.6 KB stack frame reduction).
+  - With `CONSOLE_TASK_STACK` at 8,192 bytes, measured stack headroom on COM13 during 400+ commands and stress injections is **4,264 bytes free** (over 52% headroom untouched).
 - **Hardware Status**:
   - Ready for hardware validation upon user confirmation of COM port (Global Rule 2 observed).
 
@@ -118,10 +120,16 @@ Deferred: DAC, SPI, interrupts, rules, I2C read/write, SAVE_CONFIG.
     - Rejects output/PWM operations on input-only pins (GPIO 34-39).
     - Restricts ADC commands strictly to ADC1 pins (GPIO 32-39).
 - **Test Results**:
-  - `build_host/host_tests.exe`: PASS, 3,915 assertions (0 failures), including 10,000-iteration random/garbled string fuzz test.
-  - `pytest tests/host`: PASS, 162 passed tests (150+ categorized extractor test cases + single source of truth parity).
-  - `idf.py -DTINYAI_ENABLED=ON build`: PASS (binary size 0x45310, 82% free space).
-  - `idf.py -DTINYAI_ENABLED=OFF build`: PASS (binary size 0x45310, 82% free space).
+  - `build_host/host_tests.exe`: PASS, 3,937 assertions (0 failures), including 10,000-iteration random/garbled string fuzz test.
+  - `pytest tests/host`: PASS, 168 passed tests (150+ categorized extractor test cases + single source of truth parity).
+  - `idf.py -DTINYAI_ENABLED=ON build`: PASS (binary size 0x45110 / 282,896 bytes).
+  - `idf.py -DTINYAI_ENABLED=OFF build`: PASS (binary size 0x3e250 / 254,544 bytes, 28,352 byte footprint reduction).
+  - Target Hardware Validation (`COM13`):
+    - 200 GPIO23 ON/OFF cycles (400 commands) in 8.80s (45.5 cmds/s) with 3,200-char oversized injection and malformed strings rejected cleanly without resets.
+    - 50 query loops of (`devices`, `log`, `sensors`, `status`, `mem` = 250 multi-line commands) in 8.75s with 0 dropped characters and full FIFO throughput.
+    - Stack high-water mark: 4,760 bytes min free before run, 4,248 bytes min free after all stress runs (> 4.2 KB headroom on 8 KB stack).
+    - Heap integrity: 231,072 bytes min free, 0 memory leaks.
+    - Fault status: 0 Guru Meditation errors, 0 assertions, 0 unexpected reboots.
 - **Unsure / Open Behaviors**:
   - Disambiguation policy for phrases specifying multiple pins (e.g. "turn on pin 2 and pin 4"): currently flagged as `SLOT_STATUS_AMBIGUOUS` (single command target) to prevent accidental actuation without local multi-target confirmation.
 
