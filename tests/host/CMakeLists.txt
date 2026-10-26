@@ -16,6 +16,7 @@ set(COMPONENT_SOURCES
     ${ROOT}/components/tinyml/tinyml.c
     ${ROOT}/components/model_data/model_data.c
     ${ROOT}/components/entity_extractor/entity_extractor.c
+    ${ROOT}/components/entity_extractor/slot_extractor.c
     ${ROOT}/components/automation/button_fsm.c
     ${ROOT}/components/automation/Automation.c
     ${ROOT}/components/sensor_manager/SensorManager.c
@@ -47,6 +48,7 @@ add_executable(host_tests
     test_gpio.c
     test_pin_manager.c
     test_entity.c
+    test_extractor.c
     test_command_engine.c
     test_sensor_automation.c
     test_console.c

@@ -31,7 +31,7 @@ pytest tests/host
 ## Milestones
 - [x] M1 Fix UART ring-buffer assertion and pin-manager mutex watchdog crash
 - [x] M2 Stable timed GPIO2 blink with scoped local authorization
-- [ ] M3 Typed command structs + deterministic slot extractor + rule-based safety filter
+- [x] M3 Typed command structs + deterministic slot extractor + rule-based safety filter
 - [ ] M4 Dataset (~12 intent families, 150+ examples each, grouped splits, separate handwritten challenge set, 300+ negative/adversarial)
 - [ ] M5 Retrain hashed linear classifier, calibrate, int8 quantize, export, parity tests. Try an MLP ONLY if held-out accuracy < 95%
 - [ ] M6 Integrate model into command engine and serial console (bare English + ai explain / dry-run / model / benchmark)
@@ -83,4 +83,46 @@ Deferred: DAC, SPI, interrupts, rules, I2C read/write, SAVE_CONFIG.
   - Stack allocation in `outf()` reduced from 4,096 bytes to 0 bytes (moved to static bounded storage), freeing ~4 KB of task stack headroom.
 - **Hardware Status**:
   - Ready for hardware validation upon user confirmation of COM port (Global Rule 2 observed).
+
+### Milestone 3 (2026-10-26)
+- **Single Source of Truth for Intents**:
+  - Created `components/entity_extractor/include/intents.def` defining all 12 MVP intent families (GPIO_WRITE, GPIO_TOGGLE, GPIO_READ, GPIO_BLINK, GPIO_PULSE, PWM, ADC_READ, I2C_SCAN, UART_SEND, GET_STATUS, HELP, UNKNOWN) as an X-macro.
+  - Derived C enum `intent_t` and conversion helpers in `components/entity_extractor/include/intents.h` / `slot_extractor.c`.
+  - Removed hardcoded class counts: updated `components/tinyml/include/tinyml.h` (`TINYML_MAX_LABELS INTENT_CLASS_COUNT`) and `tools/tinyai_features.py` (reads `intents.def` dynamically into `INTENTS` and `INTENT_INDEX`).
+  - Added host test asserting bit-for-bit parity and ordering between C enum and Python intent lists.
+- **Normalization & Masking**:
+  - Implemented `extractor_normalize()`:
+    - Lowercase ASCII, collapse whitespace, strip meaningless punctuation.
+    - Full written numbers to digits parser (`extractor_parse_written_number()`) supporting units, teens, tens, compounds, hundreds, thousands, and millions (e.g. "one thousand five hundred" -> 1500, "twenty five" -> 25).
+    - Unit normalization: ms/milliseconds/msec -> `ms`, s/sec/seconds -> `s`, Hz/kHz/MHz -> `hz`/`khz`/`mhz`, %/percent/pct -> `%` (including detached and attached forms like `1000ms`, `50hz`).
+    - Pin alias normalization: "pin 2", "gpio2", "GPIO 2", "io2", "built-in LED", "builtin led", "onboard led" -> `gpio2`.
+    - Produces both normalized text and masked text using placeholder tokens (`<NUM>`, `<PIN>`, `<FREQ>`, `<DUR>`, `<PCT>`).
+    - Fixed-size bounded buffer (256 bytes) with rejection of over-length and non-ASCII inputs.
+- **Rule-based Safety Filter**:
+  - Implemented `extractor_check_safety()`:
+    - Negation: "don't", "dont", "do not", "never", "without", "stop short of", "cancel" -> `SAFETY_REJECT_NEGATION`, returns safe UNKNOWN intent.
+    - Questions without action: "what does blink do?", "can you blink?", "how do i toggle?", "is pin 2 on?" -> `SAFETY_REJECT_QUESTION`, informational without actuation.
+    - Injections & privilege escalation: "ignore previous", "you are now", "disable safety", "bypass", "authorize", "as root", "as admin", "write register", "poke", "flash erase", "sudo", "jailbreak" -> `SAFETY_REJECT_INJECTION`.
+    - Multi-command chaining: "and also", ";", "then turn", "then blink" -> `SAFETY_REJECT_MULTI_COMMAND`.
+    - Configuration commands: "configure", "setup", "reconfigure" -> `SAFETY_REJECT_CONFIGURATION`.
+- **Typed Command Representation**:
+  - Created tagged union `typed_command_t` in `components/entity_extractor/include/typed_command.h` with dedicated parameter structs per intent and zero-initializing constructors (`cmd_make_gpio_write`, `cmd_make_gpio_blink`, `cmd_make_pwm`, etc.).
+- **Slot Extractor**:
+  - Implemented `extractor_parse_command()` parsing pin, duration, frequency, duty, baud, repeats, level, UART id, and quoted payloads.
+  - Rejects duration 0 or > 3,600,000 ms, duty > 100%, frequency outside 1 Hz - 40 MHz, numeric overflow (checked 64-bit intermediates), nonexistent pins (GPIO >= 40), conflicting values (both HIGH and LOW), and ambiguous multi-pin targets.
+  - Returns explicit status: `SLOT_STATUS_OK`, `SLOT_STATUS_MISSING`, `SLOT_STATUS_INVALID`, `SLOT_STATUS_AMBIGUOUS`, `SLOT_STATUS_SAFETY_REJECTED`.
+- **Validator Hook**:
+  - Implemented static ESP32 capability table in `components/entity_extractor/include/validator_hook.h`:
+    - Hard-blocks flash pins (GPIO 6-11) and UART0 console pins (GPIO 1, 3).
+    - Enforces protection on strapping pins (GPIO 0, 2, 5, 12, 15) unless explicitly approved.
+    - Rejects output/PWM operations on input-only pins (GPIO 34-39).
+    - Restricts ADC commands strictly to ADC1 pins (GPIO 32-39).
+- **Test Results**:
+  - `build_host/host_tests.exe`: PASS, 3,915 assertions (0 failures), including 10,000-iteration random/garbled string fuzz test.
+  - `pytest tests/host`: PASS, 162 passed tests (150+ categorized extractor test cases + single source of truth parity).
+  - `idf.py -DTINYAI_ENABLED=ON build`: PASS (binary size 0x45310, 82% free space).
+  - `idf.py -DTINYAI_ENABLED=OFF build`: PASS (binary size 0x45310, 82% free space).
+- **Unsure / Open Behaviors**:
+  - Disambiguation policy for phrases specifying multiple pins (e.g. "turn on pin 2 and pin 4"): currently flagged as `SLOT_STATUS_AMBIGUOUS` (single command target) to prevent accidental actuation without local multi-target confirmation.
+
 
