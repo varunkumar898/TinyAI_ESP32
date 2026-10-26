@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
+from pathlib import Path
 
 MAX_TEXT_BYTES = 160
 MAX_TOKENS = 24
@@ -26,11 +27,33 @@ FEATURE_BUCKETS = 2048
 CHAR_NGRAM_MIN = 3
 CHAR_NGRAM_MAX = 5
 
-# The seven product intents. Pin/device configuration is deliberately NOT a
-# model intent: an untrusted classifier must never reconfigure hardware.
-# Configuration phrases are trained as UNKNOWN so the model rejects them, and
-# the deterministic command layer additionally refuses configuration verbs.
-INTENTS = [
+def get_intents_def_path() -> Path:
+    candidates = [
+        Path(__file__).resolve().parent.parent / "components" / "entity_extractor" / "include" / "intents.def",
+        Path("components/entity_extractor/include/intents.def"),
+        Path("../components/entity_extractor/include/intents.def"),
+    ]
+    for c in candidates:
+        if c.exists():
+            return c.resolve()
+    raise FileNotFoundError("Could not find components/entity_extractor/include/intents.def")
+
+
+def load_canonical_intents(def_path: Path | None = None) -> list[str]:
+    """Single source of truth: loads intent list from components/entity_extractor/include/intents.def."""
+    if def_path is None:
+        def_path = get_intents_def_path()
+    content = def_path.read_text(encoding="utf-8")
+    matches = re.findall(r'INTENT_DEF\s*\(\s*([A-Za-z0-9_]+)\s*,\s*"([^"]+)"\s*\)', content)
+    return [m[1] for m in matches]
+
+
+# Canonical MVP intent families loaded from intents.def (no hard-coded list)
+INTENTS = load_canonical_intents()
+INTENT_INDEX = {name: idx for idx, name in enumerate(INTENTS)}
+
+# Legacy baseline intents preserved for comparison in M4/M5
+LEGACY_INTENTS = [
     "TURN_ON",
     "TURN_OFF",
     "TOGGLE",
@@ -39,8 +62,6 @@ INTENTS = [
     "HELP",
     "UNKNOWN",
 ]
-
-INTENT_INDEX = {name: idx for idx, name in enumerate(INTENTS)}
 
 # ASCII only. Rejecting non-ASCII avoids homoglyph/Unicode confusables being
 # silently interpreted as a different device name.

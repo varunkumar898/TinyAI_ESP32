@@ -4,6 +4,8 @@
 #include <stddef.h>
 #include <stdint.h>
 
+#include "intents.h"
+
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -11,7 +13,7 @@ extern "C" {
 #define TINYML_MAX_TEXT_BYTES 160
 #define TINYML_MAX_TOKENS 24
 #define TINYML_MAX_TOKEN_CHARS 24
-#define TINYML_MAX_LABELS 8
+#define TINYML_MAX_LABELS INTENT_CLASS_COUNT
 #define TINYML_MAX_FEATURES 2048
 
 typedef enum {
